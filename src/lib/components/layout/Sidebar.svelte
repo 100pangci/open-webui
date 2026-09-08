@@ -1,14 +1,11 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { v4 as uuidv4 } from 'uuid';
-	import Sortable from 'sortablejs';
 
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
 	import {
 		user,
 		chats,
-		settings,
 		chatId,
 		tags,
 		folders as _folders,
@@ -16,9 +13,7 @@
 		showSearch,
 		mobile,
 		pinnedChats,
-		pinnedNotes,
 		temporaryChatEnabled,
-		channels,
 		socket,
 		config,
 		isApp,
@@ -47,8 +42,6 @@
 		getChatById,
 		updateChatFolderIdById,
 		importChats,
-		deleteAllChats,
-		getChatListBySearchText,
 		markChatsRead
 	} from '$lib/apis/chats';
 	import {
@@ -57,9 +50,6 @@
 		getSharedFolders,
 		updateFolderParentIdById
 	} from '$lib/apis/folders';
-	import { createNewNote, getPinnedNoteList, toggleNotePinnedStatusById } from '$lib/apis/notes';
-	import { updateUserSettings } from '$lib/apis/users';
-	import { createNoteHandler } from '$lib/components/notes/utils';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import UserMenu from './Sidebar/UserMenu.svelte';
@@ -70,22 +60,12 @@
 	import SidebarSection from './Sidebar/Section.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Folders from './Sidebar/Folders.svelte';
-	import SharedFolderItem from './Sidebar/SharedFolderItem.svelte';
-	import { getChannels, createNewChannel } from '$lib/apis/channels';
-	import ChannelModal from './Sidebar/ChannelModal.svelte';
-	import ChannelItem from './Sidebar/ChannelItem.svelte';
 	import SearchModal from './SearchModal.svelte';
 	import FolderModal from './Sidebar/Folders/FolderModal.svelte';
 	import PinnedModelList from './Sidebar/PinnedModelList.svelte';
-	import PinnedNoteList from './Sidebar/PinnedNoteList.svelte';
-	import CalendarIcon from './Sidebar/icons/Calendar.svelte';
-	import ClockIcon from './Sidebar/icons/Clock.svelte';
-	import CodeIcon from './Sidebar/icons/Code.svelte';
 	import EditPencilIcon from './Sidebar/icons/EditPencil.svelte';
-	import NotesIcon from './Sidebar/icons/Notes.svelte';
 	import SearchIcon from './Sidebar/icons/Search.svelte';
 	import Sidebar from '../icons/Sidebar.svelte';
-	import WorkspaceIcon from './Sidebar/icons/Workspace.svelte';
 	import HotkeyHint from '../common/HotkeyHint.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
 	import DropdownMenu from '../common/DropdownMenu.svelte';
@@ -94,7 +74,6 @@
 	import MobileSwipePanel from '../common/MobileSwipePanel.svelte';
 
 	const BREAKPOINT = 768;
-	const DEFAULT_PINNED_ITEMS = ['notes', 'workspace'];
 
 	let scrollTop = 0;
 
@@ -111,8 +90,6 @@
 	// chatId, so this reactive only re-runs once chatId catches up to the same value.
 	$: selectedChatId = $chatId || null;
 
-	let showCreateChannel = false;
-
 	// Pagination variables
 	let chatListLoading = false;
 	let chatListReady = false;
@@ -121,10 +98,7 @@
 	let showCreateFolderModal = false;
 
 	let showPinnedModels = true;
-	let showPinnedNotes = false;
-	let showChannels = false;
 	let showFolders = false;
-	let showSharedFolders = false;
 	let showChatsMenu = false;
 
 	let folders = {};
@@ -150,91 +124,6 @@
 		}
 
 		folderRegistry[folder.id]?.setFolderItems?.();
-	};
-
-	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
-
-	const isMenuItemVisible = (id) => {
-		switch (id) {
-			case 'notes':
-				return (
-					($config?.features?.enable_notes ?? false) &&
-					($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true))
-				);
-			case 'workspace':
-				return (
-					$user?.role === 'admin' ||
-					$user?.permissions?.workspace?.models ||
-					$user?.permissions?.workspace?.knowledge ||
-					$user?.permissions?.workspace?.prompts ||
-					$user?.permissions?.workspace?.tools ||
-					$user?.permissions?.workspace?.skills
-				);
-			case 'automations':
-				return (
-					$config?.features?.enable_automations &&
-					($user?.role === 'admin' || $user?.permissions?.features?.automations)
-				);
-			case 'calendar':
-				return (
-					$config?.features?.enable_calendar &&
-					($user?.role === 'admin' || $user?.permissions?.features?.calendar)
-				);
-			case 'playground':
-				return $user?.role === 'admin';
-			default:
-				return false;
-		}
-	};
-
-	const getMenuItemMeta = (id) => {
-		const items = {
-			notes: { label: 'Notes', href: '/notes', iconType: 'note' },
-			workspace: { label: 'Workspace', href: '/workspace', iconType: 'workspace' },
-			automations: { label: 'Automations', href: '/automations', iconType: 'automations' },
-			calendar: { label: 'Calendar', href: '/calendar', iconType: 'calendar' },
-			playground: { label: 'Playground', href: '/playground', iconType: 'playground' }
-		};
-		return items[id];
-	};
-
-	const menuItemPathPrefixes = {
-		notes: '/notes',
-		workspace: '/workspace',
-		calendar: '/calendar',
-		automations: '/automations',
-		playground: '/playground'
-	};
-
-	const getActiveMenuItemId = (pathname) => {
-		for (const [id, pathPrefix] of Object.entries(menuItemPathPrefixes)) {
-			if (pathname === pathPrefix || pathname.startsWith(`${pathPrefix}/`)) {
-				return id;
-			}
-		}
-
-		return null;
-	};
-
-	$: activeMenuItemId = getActiveMenuItemId($page.url.pathname);
-
-	const initPinnedMenuSortable = () => {
-		const el = document.getElementById('pinned-menu-items-list');
-		if (el && !$mobile) {
-			new Sortable(el, {
-				animation: 150,
-				onUpdate: async (event) => {
-					const itemId = event.item.dataset.id;
-					const newIndex = event.newIndex;
-					const current = [...pinnedItems];
-					const oldIndex = current.indexOf(itemId);
-					current.splice(oldIndex, 1);
-					current.splice(newIndex, 0, itemId);
-					settings.set({ ...$settings, pinnedMenuItems: current });
-					await updateUserSettings(localStorage.token, { ui: $settings });
-				}
-			});
-		}
 	};
 
 	$: initSelectedFolderChats($selectedFolder as SelectedSidebarFolder);
@@ -356,22 +245,6 @@
 		}
 	};
 
-	const initChannels = async () => {
-		// default (none), group, dm type
-		const res = await getChannels(localStorage.token).catch((error) => {
-			return null;
-		});
-
-		if (res) {
-			await channels.set(
-				res.sort(
-					(a, b) =>
-						['', null, 'group', 'dm'].indexOf(a.type) - ['', null, 'group', 'dm'].indexOf(b.type)
-				)
-			);
-		}
-	};
-
 	const initChatList = async () => {
 		// Reset pagination variables
 		console.log('initChatList');
@@ -385,16 +258,6 @@
 				tags.set(_tags);
 			})(),
 			(async () => {
-				if (
-					$config?.features?.enable_notes &&
-					($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true))
-				) {
-					console.log('Init pinned notes');
-					const _pinnedNotes = await getPinnedNoteList(localStorage.token).catch(() => []);
-					pinnedNotes.set(_pinnedNotes);
-				}
-			})(),
-			(async () => {
 				console.log('Init chat list');
 				await refreshChatRows();
 			})()
@@ -402,14 +265,6 @@
 	};
 
 	const initSidebarData = async () => {
-		// Only fetch channels if the feature is enabled and user has permission
-		if (
-			$config?.features?.enable_channels &&
-			($user?.role === 'admin' || ($user?.permissions?.features?.channels ?? true))
-		) {
-			await initChannels();
-		}
-
 		await initChatList();
 	};
 
@@ -735,7 +590,6 @@
 
 		await tick();
 		await initSidebarData();
-		initPinnedMenuSortable();
 
 		return () => {
 			unsubscribers.forEach((unsubscriber) => unsubscriber());
@@ -821,57 +675,8 @@
 		}
 	};
 
-	const itemClickHandler = async () => {
-		selectedChatId = null;
-		chatId.set('');
-
-		closeMobileSidebar();
-
-		await tick();
-	};
-
 	const isWindows = /Windows/i.test(navigator.userAgent);
 </script>
-
-<ChannelModal
-	bind:show={showCreateChannel}
-	onSubmit={async (payload: any) => {
-		let { type, name, is_private, access_grants, group_ids, user_ids } = payload ?? {};
-		name = name?.trim();
-
-		if (type === 'dm') {
-			if (!user_ids || user_ids.length === 0) {
-				toast.error($i18n.t('Please select at least one user for Direct Message channel.'));
-				return;
-			}
-		} else {
-			if (!name) {
-				toast.error($i18n.t('Channel name cannot be empty.'));
-				return;
-			}
-		}
-
-		const res = await createNewChannel(localStorage.token, {
-			type: type,
-			name: name,
-			is_private: is_private,
-			access_grants: access_grants,
-			group_ids: group_ids,
-			user_ids: user_ids
-		}).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
-
-		if (res) {
-			$socket.emit('join-channels', { auth: { token: $user?.token } });
-			await initChannels();
-			showCreateChannel = false;
-			showChannels = true;
-			goto(`/channels/${res.id}`);
-		}
-	}}
-/>
 
 <FolderModal
 	bind:show={showCreateFolderModal}
@@ -1024,49 +829,6 @@
 							</button>
 						</Tooltip>
 					</div>
-
-					{#each pinnedItems as itemId (itemId)}
-						{@const meta = getMenuItemMeta(itemId)}
-						{#if meta && isMenuItemVisible(itemId)}
-							<div class="">
-								<Tooltip content={$i18n.t(meta.label)} placement="right">
-									<a
-										class=" cursor-pointer flex size-8 items-center justify-center transition group"
-										href={meta.href}
-										on:click={async (e) => {
-											e.stopImmediatePropagation();
-											e.preventDefault();
-											goto(meta.href);
-											itemClickHandler();
-										}}
-										draggable="false"
-										aria-label={$i18n.t(meta.label)}
-									>
-										<div
-											class="self-center flex size-[calc(30px*var(--app-text-scale,1))] items-center justify-center rounded-lg transition {itemId ===
-											activeMenuItemId
-												? ($settings?.highContrastMode ?? false)
-													? 'bg-black/[0.035] dark:bg-white/[0.06]'
-													: 'bg-black/[0.035] dark:bg-white/[0.045]'
-												: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-900'}"
-										>
-											{#if itemId === 'notes'}
-												<NotesIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'workspace'}
-												<WorkspaceIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'automations'}
-												<ClockIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'calendar'}
-												<CalendarIcon className="size-4" strokeWidth="1.5" />
-											{:else if itemId === 'playground'}
-												<CodeIcon className="size-4" strokeWidth="1.5" />
-											{/if}
-										</div>
-									</a>
-								</Tooltip>
-							</div>
-						{/if}
-					{/each}
 				</div>
 			</button>
 
@@ -1249,52 +1011,6 @@
 								<HotkeyHint name="search" className=" hover-reveal " />
 							</button>
 						</div>
-
-						<div id="pinned-menu-items-list">
-							{#each pinnedItems as itemId (itemId)}
-								{@const meta = getMenuItemMeta(itemId)}
-								{#if meta && isMenuItemVisible(itemId)}
-									<div
-										class="px-1 flex justify-center text-gray-700 dark:text-gray-300"
-										data-id={itemId}
-									>
-										<a
-											id="sidebar-{itemId}-button"
-											class="grow flex items-center space-x-2 rounded-xl px-2 py-1.5 transition {itemId ===
-											activeMenuItemId
-												? ($settings?.highContrastMode ?? false)
-													? 'bg-black/[0.035] dark:bg-white/[0.06]'
-													: 'bg-black/[0.035] dark:bg-white/[0.045]'
-												: 'hover:bg-gray-100 dark:hover:bg-gray-900'}"
-											href={meta.href}
-											on:click={itemClickHandler}
-											draggable="false"
-											aria-label={$i18n.t(meta.label)}
-										>
-											<div class="self-center flex size-4 shrink-0 items-center justify-center">
-												{#if itemId === 'notes'}
-													<NotesIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'workspace'}
-													<WorkspaceIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'automations'}
-													<ClockIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'calendar'}
-													<CalendarIcon className="size-4" strokeWidth="1.5" />
-												{:else if itemId === 'playground'}
-													<CodeIcon className="size-4" strokeWidth="1.5" />
-												{/if}
-											</div>
-
-											<div class="flex self-center translate-y-[0.5px]">
-												<div class=" self-center text-[0.8125rem] leading-5">
-													{$i18n.t(meta.label)}
-												</div>
-											</div>
-										</a>
-									</div>
-								{/if}
-							{/each}
-						</div>
 					</div>
 
 					{#if $visiblePinnedModels.length > 0}
@@ -1305,57 +1021,6 @@
 							dragAndDrop={false}
 						>
 							<PinnedModelList bind:selectedChatId {shiftKey} />
-						</SidebarSection>
-					{/if}
-
-					{#if ($config?.features?.enable_notes ?? false) && ($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true)) && $pinnedNotes.length > 0}
-						<SidebarSection
-							id="sidebar-pinned-notes"
-							bind:open={showPinnedNotes}
-							name={$i18n.t('Notes')}
-							dragAndDrop={false}
-							onAdd={async () => {
-								const note = await createNoteHandler('New Note');
-								if (note) {
-									goto(`/notes/${note.id}`);
-								}
-							}}
-							onAddLabel={$i18n.t('New Note')}
-						>
-							<PinnedNoteList bind:selectedChatId />
-						</SidebarSection>
-					{/if}
-
-					{#if $config?.features?.enable_channels && ($user?.role === 'admin' || ($user?.permissions?.features?.channels ?? true))}
-						<SidebarSection
-							id="sidebar-channels"
-							bind:open={showChannels}
-							name={$i18n.t('Channels')}
-							dragAndDrop={false}
-							onAdd={$user?.role === 'admin' || ($user?.permissions?.features?.channels ?? true)
-								? async () => {
-										await tick();
-
-										setTimeout(() => {
-											showCreateChannel = true;
-										}, 0);
-									}
-								: null}
-							onAddLabel={$i18n.t('Create Channel')}
-						>
-							{#each $channels as channel, channelIdx (`${channel?.id}`)}
-								<ChannelItem
-									{channel}
-									onUpdate={async () => {
-										await initChannels();
-									}}
-								/>
-
-								{#if channelIdx < $channels.length - 1 && channel.type !== $channels[channelIdx + 1]?.type}<hr
-										class=" border-gray-100/40 dark:border-gray-800/10 my-1.5 w-full"
-									/>
-								{/if}
-							{/each}
 						</SidebarSection>
 					{/if}
 

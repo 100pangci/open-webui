@@ -47,7 +47,6 @@
 	export let compactPreview = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
-	export let onInsertToNote: ((content: string) => void) | null = null;
 
 	// Safari's content-visibility implementation has paint bugs that leave
 	// on-screen messages blank (#26712), so skip virtualization there
@@ -83,7 +82,6 @@
 				{compactPreview}
 				{editCodeBlock}
 				{topPadding}
-				{onInsertToNote}
 			/>
 		{:else if (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
 			<ResponseMessage
@@ -143,7 +141,6 @@
 					{compactPreview}
 					{editCodeBlock}
 					{topPadding}
-					{onInsertToNote}
 				/>
 			{/key}
 		{/if}

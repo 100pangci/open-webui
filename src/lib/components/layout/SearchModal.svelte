@@ -25,15 +25,13 @@
 	import Loader from '../common/Loader.svelte';
 	import { createMessagesList } from '$lib/utils';
 	import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
-	import { config, user, chatId as currentChatId, tags } from '$lib/stores';
+	import { user, chatId as currentChatId, tags } from '$lib/stores';
 	import { refreshChatList } from '$lib/stores/chatList';
 	import Messages from '../chat/Messages.svelte';
 	import { goto } from '$app/navigation';
 	import EditPencilIcon from './Sidebar/icons/EditPencil.svelte';
-	import NotesIcon from './Sidebar/icons/Notes.svelte';
 
 	import ChatMenu from './Sidebar/ChatMenu.svelte';
-	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
@@ -46,7 +44,6 @@
 	export let show = false;
 	export let onClose = () => {};
 
-	let showShareChatModal = false;
 	let showDeleteConfirm = false;
 	let menuChatId = '';
 	let menuChatTitle = '';
@@ -526,24 +523,6 @@
 	};
 
 	onMount(() => {
-		actions = [
-			...actions,
-			...(($config?.features?.enable_notes ?? false) &&
-			($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true))
-				? [
-						{
-							label: $i18n.t('Create a new note'),
-							onClick: async () => {
-								await goto(`/notes?content=${query}`);
-								show = false;
-								onClose();
-							},
-							icon: NotesIcon
-						}
-					]
-				: [])
-		];
-
 		document.addEventListener('keydown', onKeyDown);
 		document.addEventListener('keydown', onShiftKeyDown);
 		document.addEventListener('keyup', onShiftKeyUp);
@@ -558,8 +537,6 @@
 		document.removeEventListener('keyup', onShiftKeyUp);
 	});
 </script>
-
-<ShareChatModal bind:show={showShareChatModal} chatId={menuChatId} />
 
 <DeleteConfirmDialog
 	bind:show={showDeleteConfirm}
@@ -816,10 +793,6 @@
 										<div class="flex items-center">
 											<ChatMenu
 												chatId={chat.id}
-												shareHandler={() => {
-													menuChatId = chat.id;
-													showShareChatModal = true;
-												}}
 												{moveChatHandler}
 												cloneChatHandler={() => {
 													cloneChatHandler(chat.id);

@@ -1,8 +1,5 @@
 <script lang="ts">
 	import SlashCommands from './Commands/SlashCommands.svelte';
-	import AtCommands from './Commands/AtCommands.svelte';
-	import Knowledge from './Commands/Knowledge.svelte';
-	import Skills from './Commands/Skills.svelte';
 	import Emojis from './Commands/Emojis.svelte';
 	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
 
@@ -107,14 +104,7 @@
 					onSelect={(e) => {
 						const { type, data } = e;
 
-						if (type === 'prompt') {
-							command({
-								id: data.command,
-								label: data.command,
-								content: data.content,
-								type: 'prompt'
-							});
-						} else if (type === 'command' && data.id === 'compact') {
+						if (type === 'command' && data.id === 'compact') {
 							command({ id: data.id, label: data.id });
 							onCompact();
 						} else if (type === 'command' && data.id === 'status') {
@@ -132,101 +122,6 @@
 						} else if (type === 'command' && data.id === 'temporary') {
 							command({ id: data.id, label: data.id });
 							onTemporary();
-						} else if (type === 'skill') {
-							command({
-								id: `${data.id}|${data.name}`,
-								label: data.name
-							});
-
-							onSelect({
-								type: 'skill',
-								data: data
-							});
-						}
-					}}
-				/>
-			{:else if char === '#'}
-				<Knowledge
-					bind:this={suggestionElement}
-					{query}
-					bind:filteredItems
-					onSelect={(e) => {
-						const { type, data } = e;
-
-						if (type === 'knowledge') {
-							insertTextHandler('');
-
-							onUpload({
-								type: 'file',
-								data: data
-							});
-						} else if (type === 'web') {
-							insertTextHandler('');
-
-							onUpload({
-								type: 'web',
-								data: data
-							});
-						}
-					}}
-				/>
-			{:else if char === '@'}
-				<AtCommands
-					bind:this={suggestionElement}
-					{query}
-					bind:filteredItems
-					onSelect={(e) => {
-						const { type, data } = e;
-
-						if (type === 'model') {
-							insertTextHandler('');
-
-							onSelect({
-								type: 'model',
-								data: data
-							});
-						} else if (type === 'knowledge') {
-							insertTextHandler('');
-
-							onUpload({
-								type: 'file',
-								data: data
-							});
-						} else if (type === 'filesystem') {
-							insertTextHandler('');
-
-							onUpload({
-								type: 'filesystem',
-								data: data
-							});
-						} else if (type === 'web') {
-							insertTextHandler('');
-
-							onUpload({
-								type: 'web',
-								data: data
-							});
-						}
-					}}
-				/>
-			{:else if char === '$'}
-				<Skills
-					bind:this={suggestionElement}
-					{query}
-					bind:filteredItems
-					onSelect={(e) => {
-						const { type, data } = e;
-
-						if (type === 'skill') {
-							command({
-								id: `${data.id}|${data.name}`,
-								label: data.name
-							});
-
-							onSelect({
-								type: 'skill',
-								data: data
-							});
 						}
 					}}
 				/>

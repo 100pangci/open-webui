@@ -5,7 +5,6 @@
 
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import AdvancedParams from '../Settings/Advanced/AdvancedParams.svelte';
-	import Valves from '$lib/components/chat/Controls/Valves.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
 
@@ -25,7 +24,6 @@
 	};
 
 	let showFiles = getOpen('files');
-	let showValves = getOpen('valves', false);
 	let showSystemPrompt = getOpen('systemPrompt');
 	let showAdvancedParams = getOpen('advancedParams');
 
@@ -87,21 +85,6 @@
 								}}
 							/>
 						{/each}
-					</div>
-				</Collapsible>
-			{/if}
-
-			{#if $user?.role === 'admin' || ($user?.permissions.chat?.valves ?? true)}
-				<Collapsible
-					bind:open={showValves}
-					onChange={setOpen('valves')}
-					title={$i18n.t('Valves')}
-					buttonClassName={compactSectionButtonClass}
-					chevronClassName="size-2.5"
-					chevronStrokeWidth="2"
-				>
-					<div class="pt-1 pb-1 text-xs" slot="content">
-						<Valves show={showValves} />
 					</div>
 				</Collapsible>
 			{/if}

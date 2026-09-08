@@ -14,10 +14,9 @@
 		getChatPinnedStatusById,
 		toggleChatPinnedStatusById
 	} from '$lib/apis/chats';
-	import { chats, folders, settings, theme, user } from '$lib/stores';
+	import { chats, folders, settings, user } from '$lib/stores';
 	import { createMessagesList } from '$lib/utils';
 	import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
-	import { downloadChatAsPDF } from '$lib/apis/utils';
 	import ArchiveBoxIcon from '$lib/components/icons/ArchiveBox.svelte';
 	import CopyIcon from './icons/Copy.svelte';
 	import DownloadIcon from './icons/Download.svelte';
@@ -26,13 +25,11 @@
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import PinIcon from './icons/Pin.svelte';
 	import PinSlashIcon from './icons/PinSlash.svelte';
-	import ShareIcon from './icons/Share.svelte';
 	import TrashIcon from './icons/Trash.svelte';
 	import ChatCheckIcon from '$lib/components/icons/ChatCheck.svelte';
 
 	const i18n = getContext('i18n');
 
-	export let shareHandler: Function;
 	export let moveChatHandler: Function;
 
 	export let cloneChatHandler: Function;
@@ -308,19 +305,6 @@
 
 	<div slot="content">
 		<DropdownMenu className="select-none min-w-[12.5rem] transition">
-			{#if $user?.role === 'admin' || ($user.permissions?.chat?.share ?? true)}
-				<button
-					draggable="false"
-					class="flex h-[1.6875rem] gap-2 items-center rounded-xl px-2 text-[0.8125rem] cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900 w-full"
-					on:click={() => {
-						shareHandler();
-					}}
-				>
-					<ShareIcon className="size-3.5" strokeWidth="1.5" />
-					<div class="flex items-center">{$i18n.t('Share')}</div>
-				</button>
-			{/if}
-
 			{#if $user?.role === 'admin' || ($user.permissions?.chat?.export ?? true)}
 				<DropdownSub contentClass="select-none z-50">
 					<button

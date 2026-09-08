@@ -17,7 +17,7 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
-	import { goto, invalidate, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { onMount, getContext, createEventDispatcher, tick } from 'svelte';
 	import { LinkPreview } from 'bits-ui';
 	import {
@@ -26,7 +26,6 @@
 		deleteChatById,
 		getAllTags,
 		getChatById,
-		getChatListByTagName,
 		markChatUnreadById,
 		updateChatById,
 		updateChatFolderIdById
@@ -45,7 +44,6 @@
 
 	import ChatMenu from './ChatMenu.svelte';
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
-	import ShareChatModal from '$lib/components/chat/ShareChatModal.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import DragGhost from '$lib/components/common/DragGhost.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -198,7 +196,6 @@
 		onReadStateChange(res);
 	};
 
-	let showShareChatModal = false;
 	let confirmEdit = false;
 
 	let chatTitle = title;
@@ -552,8 +549,6 @@
 	{/if}
 {/snippet}
 
-<ShareChatModal bind:show={showShareChatModal} chatId={id} />
-
 <DeleteConfirmDialog
 	bind:show={showDeleteConfirm}
 	title={$i18n.t('Delete chat?')}
@@ -741,9 +736,6 @@
 						chatId={id}
 						cloneChatHandler={() => {
 							cloneChatHandler(id);
-						}}
-						shareHandler={() => {
-							showShareChatModal = true;
 						}}
 						{moveChatHandler}
 						archiveChatHandler={() => {

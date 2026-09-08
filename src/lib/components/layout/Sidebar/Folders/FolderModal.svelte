@@ -6,12 +6,9 @@
 	import XMark from '../icons/XMark.svelte';
 
 	import { toast } from 'svelte-sonner';
-	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { user, config } from '$lib/stores';
+	import { user } from '$lib/stores';
 
 	import Textarea from '$lib/components/common/Textarea.svelte';
-	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
 	import { getFolderById } from '$lib/apis/folders';
 	const i18n = getContext('i18n');
 
@@ -28,30 +25,13 @@
 		background_image_url: null
 	};
 	let data = {
-		system_prompt: '',
-		files: []
+		system_prompt: ''
 	};
 
 	let loading = false;
 
 	const submitHandler = async () => {
 		loading = true;
-
-		if ((data?.files ?? []).some((file) => file.status === 'uploading')) {
-			toast.error($i18n.t('Please wait until all files are uploaded.'));
-			loading = false;
-			return;
-		}
-
-		// Check folder max file count limit
-		const maxFileCount = $config?.features?.folder_max_file_count ?? '';
-		if (maxFileCount && (data?.files ?? []).length > maxFileCount) {
-			toast.error(
-				$i18n.t('Maximum number of files per folder is {{max}}.', { max: maxFileCount ?? 0 })
-			);
-			loading = false;
-			return;
-		}
 
 		await onSubmit({
 			name,
@@ -74,9 +54,8 @@
 			meta = folder.meta || {
 				background_image_url: null
 			};
-			data = folder.data || {
-				system_prompt: '',
-				files: []
+			data = {
+				system_prompt: folder.data?.system_prompt ?? ''
 			};
 		}
 
@@ -102,8 +81,7 @@
 			background_image_url: null
 		};
 		data = {
-			system_prompt: '',
-			files: []
+			system_prompt: ''
 		};
 	}
 </script>
@@ -228,18 +206,6 @@
 							</div>
 						</div>
 					{/if}
-
-					<div class="my-2">
-						<Knowledge bind:selectedItems={data.files}>
-							<div slot="label">
-								<div class="flex w-full justify-between">
-									<div class=" text-xs text-gray-500">
-										{$i18n.t('Knowledge')}
-									</div>
-								</div>
-							</div>
-						</Knowledge>
-					</div>
 
 					<div class="flex justify-end pt-3 text-sm font-normal gap-1.5">
 						<button

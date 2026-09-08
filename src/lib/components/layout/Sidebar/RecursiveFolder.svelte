@@ -4,7 +4,6 @@
 	const i18n = getContext('i18n');
 	const dispatch = createEventDispatcher();
 
-	import DOMPurify from 'dompurify';
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
@@ -41,7 +40,6 @@
 
 	import ChatItem from './ChatItem.svelte';
 	import FolderMenu from './Folders/FolderMenu.svelte';
-	import FolderShareModal from './Folders/FolderShareModal.svelte';
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import FolderModal from './Folders/FolderModal.svelte';
 	import Emoji from '$lib/components/common/Emoji.svelte';
@@ -66,7 +64,6 @@
 	let folderElement;
 
 	let showFolderModal = false;
-	let showShareModal = false;
 	let edit = false;
 
 	let showCreateSubFolderModal = false;
@@ -710,8 +707,6 @@
 	onSubmit={createSubFolderHandler}
 />
 
-<FolderShareModal bind:show={showShareModal} folder={folders[folderId]} />
-
 {#if dragged && x && y}
 	<DragGhost {x} {y}>
 		<div class=" bg-black/80 backdrop-blur-2xl px-2 py-1 rounded-lg w-fit max-w-40">
@@ -865,9 +860,6 @@
 						<FolderMenu
 							onEdit={() => {
 								showFolderModal = true;
-							}}
-							onShare={() => {
-								showShareModal = true;
 							}}
 							onDelete={() => {
 								showDeleteConfirm = true;

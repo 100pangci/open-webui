@@ -9,14 +9,12 @@
 	import { page } from '$app/stores';
 	import { fade } from 'svelte/transition';
 
-	import { getModels, getToolServersData, getVersionUpdates } from '$lib/apis';
-	import { getTools } from '$lib/apis/tools';
+	import { getModels, getVersionUpdates } from '$lib/apis';
 	import { getBanners } from '$lib/apis/configs';
-	import { getTerminalServers } from '$lib/apis/terminal';
 	import { getUserSettings } from '$lib/apis/users';
 	import { setAppFontFamily, setTextScale } from '$lib/utils/text-scale';
 
-	import { WEBUI_VERSION, WEBUI_API_BASE_URL } from '$lib/constants';
+	import { WEBUI_VERSION } from '$lib/constants';
 	import { compareVersion } from '$lib/utils';
 
 	import {
@@ -24,17 +22,10 @@
 		user,
 		settings,
 		models,
-		knowledge,
-		tools,
-		functions,
-		tags,
 		banners,
 		showSettings,
 		showChangelog,
 		temporaryChatEnabled,
-		toolServers,
-		terminalServers,
-		selectedTerminalId,
 		showSearch,
 		showSidebar,
 		showControls,
@@ -114,78 +105,9 @@
 		);
 	};
 
-	const setToolServers = async () => {
-		let toolServersData = await getToolServersData($settings?.toolServers ?? []);
-		toolServersData = toolServersData.filter((data) => {
-			if (!data || data.error) {
-				toast.error(
-					$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
-						URL: data?.url
-					})
-				);
-				return false;
-			}
-			return true;
-		});
-		toolServers.set(toolServersData);
-
-		// Inject enabled terminal servers as always-on tool servers
-		const enabledTerminals = (($settings as any)?.terminalServers ?? []).filter(
-			(s: any) => s.enabled || s.url === $selectedTerminalId
-		);
-
-		// Fetch terminal servers the user has access to (for FileNav + terminal_id)
-		const systemTerminals = await getTerminalServers(localStorage.token);
-		terminalServers.set([
-			...(enabledTerminals.length > 0
-				? (
-						await getToolServersData(
-							enabledTerminals.map((t: any) => ({
-								url: t.url,
-								auth_type: t.auth_type ?? 'bearer',
-								key: t.key ?? '',
-								path: t.path ?? '/openapi.json',
-								config: { enable: true }
-							}))
-						)
-					)
-						.filter((data) => {
-							if (!data || data.error) {
-								toast.error(
-									$i18n.t(`Failed to connect to {{URL}} terminal server`, {
-										URL: data?.url
-									})
-								);
-								return false;
-							}
-							return true;
-						})
-						.map((data, i) => ({
-							...data,
-							key: enabledTerminals[i]?.key ?? '',
-							config: enabledTerminals[i]?.config ?? data?.config ?? {}
-						}))
-				: []),
-			// Store with proxy URL and session key for FileNav file browsing
-			...systemTerminals.map((t) => ({
-				id: t.id,
-				url: `${WEBUI_API_BASE_URL}/terminals/${t.id}`,
-				name: t.name,
-				key: localStorage.token,
-				contexts: t.contexts ?? {},
-				config: t.config ?? {}
-			}))
-		]);
-	};
-
 	const setBanners = async () => {
 		const bannersData = await getBanners(localStorage.token);
 		banners.set(bannersData);
-	};
-
-	const setTools = async () => {
-		const toolsData = await getTools(localStorage.token);
-		tools.set(toolsData);
 	};
 
 	const openSettingsFromUrl = async () => {
@@ -249,7 +171,6 @@
 			await Promise.all([
 				checkLocalDBChats(),
 				setBanners().catch((e) => console.error('Failed to load banners:', e)),
-				setTools().catch((e) => console.error('Failed to load tools:', e)),
 				setUserSettings(async () => {
 					await setModels().catch((e) => console.error('Failed to load models:', e));
 				})
@@ -258,19 +179,6 @@
 			console.error('Failed to load user settings:', e);
 			toast.error($i18n.t('Failed to load Interface settings'));
 			return;
-		}
-
-		selectedTerminalId.set(localStorage.selectedTerminalId ?? null);
-
-		const loadToolServers = setToolServers().catch((e) => {
-			console.error('Failed to load tool servers:', e);
-			terminalServers.set([]);
-		});
-		if (
-			$page.url.searchParams.get('q') &&
-			($page.url.searchParams.get('submit') ?? 'true') === 'true'
-		) {
-			await loadToolServers;
 		}
 
 		const setupKeyboardShortcuts = () => {
@@ -415,15 +323,6 @@
 		await showControls.set(!$mobile ? localStorage.showControls === 'true' : false);
 		showControls.subscribe((value) => {
 			localStorage.showControls = value ? 'true' : 'false';
-		});
-
-		// Persist selectedTerminalId across page loads
-		selectedTerminalId.subscribe((value) => {
-			if (value === null) {
-				delete localStorage.selectedTerminalId;
-			} else {
-				localStorage.selectedTerminalId = value;
-			}
 		});
 
 		await tick();

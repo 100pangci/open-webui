@@ -54,7 +54,6 @@
 	export let triggerScroll: Function;
 
 	export let topPadding = false;
-	export let onInsertToNote: ((content: string) => void) | null = null;
 
 	const dispatch = createEventDispatcher();
 
@@ -334,7 +333,6 @@
 									{readOnly}
 									{compactPreview}
 									{topPadding}
-									{onInsertToNote}
 								/>
 							{/if}
 						{/key}
@@ -399,7 +397,6 @@
 										{compactPreview}
 										{editCodeBlock}
 										{topPadding}
-										{onInsertToNote}
 									/>
 								{/if}
 							{/key}

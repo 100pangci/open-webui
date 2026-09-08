@@ -1,15 +1,13 @@
 <script lang="ts">
 	import DOMPurify from 'dompurify';
-	import { toast } from 'svelte-sonner';
 
 	import type { Token } from 'marked';
 	import { getContext } from 'svelte';
-	import { goto } from '$app/navigation';
 
 	const i18n = getContext('i18n');
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
-	import { copyToClipboard, unescapeHtml } from '$lib/utils';
+	import { unescapeHtml } from '$lib/utils';
 
 	import Image from '$lib/components/common/Image.svelte';
 	import KatexRenderer from './KatexRenderer.svelte';
@@ -17,8 +15,6 @@
 	import HtmlToken from './HTMLToken.svelte';
 	import TextToken from './MarkdownInlineTokens/TextToken.svelte';
 	import CodespanToken from './MarkdownInlineTokens/CodespanToken.svelte';
-	import MentionToken from './MarkdownInlineTokens/MentionToken.svelte';
-	import NoteLinkToken from './MarkdownInlineTokens/NoteLinkToken.svelte';
 	import SourceToken from './SourceToken.svelte';
 
 	export let id: string;
@@ -26,45 +22,6 @@
 	export let tokens: Token[];
 	export let sourceIds = [];
 	export let onSourceClick: Function = () => {};
-
-	/**
-	 * Check if a URL is a same-origin note link and return the note ID if so.
-	 */
-	const getNoteIdFromHref = (href: string): string | null => {
-		try {
-			const url = new URL(href, window.location.origin);
-			if (url.origin === window.location.origin) {
-				const match = url.pathname.match(/^\/notes\/([^/]+)$/);
-				if (match) {
-					return match[1];
-				}
-			}
-		} catch {
-			// Invalid URL
-		}
-		return null;
-	};
-
-	/**
-	 * Handle link clicks - intercept same-origin app URLs for in-app navigation
-	 */
-	const handleLinkClick = (e: MouseEvent, href: string) => {
-		try {
-			const url = new URL(href, window.location.origin);
-			// Check if same origin and an in-app route
-			if (
-				url.origin === window.location.origin &&
-				(url.pathname.startsWith('/notes/') ||
-					url.pathname.startsWith('/c/') ||
-					url.pathname.startsWith('/channels/'))
-			) {
-				e.preventDefault();
-				goto(url.pathname + url.search + url.hash);
-			}
-		} catch {
-			// Invalid URL, let browser handle it
-		}
-	};
 </script>
 
 {#each tokens as token, tokenIdx (tokenIdx)}
@@ -73,27 +30,12 @@
 	{:else if token.type === 'html'}
 		<HtmlToken {id} {token} {onSourceClick} />
 	{:else if token.type === 'link'}
-		{@const noteId = getNoteIdFromHref(token.href)}
-		{#if noteId}
-			<NoteLinkToken {noteId} href={token.href} />
-		{:else if token.tokens}
-			<a
-				href={token.href}
-				target="_blank"
-				rel="nofollow"
-				title={token.title}
-				on:click={(e) => handleLinkClick(e, token.href)}
-			>
+		{#if token.tokens}
+			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>
 				<svelte:self id={`${id}-a`} tokens={token.tokens} {onSourceClick} {done} />
 			</a>
 		{:else}
-			<a
-				href={token.href}
-				target="_blank"
-				rel="nofollow"
-				title={token.title}
-				on:click={(e) => handleLinkClick(e, token.href)}>{token.text}</a
-			>
+			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>{token.text}</a>
 		{/if}
 	{:else if token.type === 'image'}
 		<Image src={token.href} alt={token.text} allowExternal={true} />
@@ -126,8 +68,6 @@
 				} catch {}
 			}}
 		></iframe>
-	{:else if token.type === 'mention'}
-		<MentionToken {token} />
 	{:else if token.type === 'footnote'}
 		{@html DOMPurify.sanitize(
 			`<sup class="footnote-ref footnote-ref-text">${token.escapedText}</sup>`

@@ -44,7 +44,7 @@
 	import Switch from '$lib/components/common/Switch.svelte';
 	import ChatBubbleOval from '$lib/components/icons/ChatBubbleOval.svelte';
 	import Keyframes from '$lib/components/icons/Keyframes.svelte';
-	import TagSelector from '$lib/components/workspace/common/TagSelector.svelte';
+	import TagSelector from './TagSelector.svelte';
 
 	import ModelItem from './ModelItem.svelte';
 

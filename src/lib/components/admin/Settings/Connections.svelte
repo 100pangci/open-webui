@@ -332,7 +332,6 @@
 								<OllamaConnection
 									bind:url={OLLAMA_BASE_URLS[idx]}
 									bind:config={OLLAMA_API_CONFIGS[idx]}
-									{idx}
 									onSubmit={() => {
 										updateOllamaHandler();
 									}}

@@ -10,41 +10,21 @@
 
 	const dispatch = createEventDispatcher();
 
-	import { createNewFeedback, getFeedbackById, updateFeedbackById } from '$lib/apis/evaluations';
-	import { getChatById } from '$lib/apis/chats';
-	import { generateTags } from '$lib/apis';
-
-	import {
-		audioQueue,
-		config,
-		models,
-		settings,
-		temporaryChatEnabled,
-		TTSWorker,
-		user
-	} from '$lib/stores';
-	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
-	import { imageGenerations } from '$lib/apis/images';
+	import { config, models, settings, user } from '$lib/stores';
 	import {
 		copyToClipboard as _copyToClipboard,
-		approximateToHumanReadable,
-		getMessageContentParts,
 		sanitizeResponseContent,
-		createMessagesList,
 		formatMessageTimestamp,
 		formatMessageTimestampFull,
-		removeDetails,
 		removeAllDetails
 	} from '$lib/utils';
-	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import equal from 'fast-deep-equal';
 
 	import Name from './Name.svelte';
 	import ProfileImage from './ProfileImage.svelte';
 	import Image from '$lib/components/common/Image.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import RateComment from './RateComment.svelte';
-	import WebSearchResults from './ResponseMessage/WebSearchResults.svelte';
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
 
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
@@ -53,11 +33,9 @@
 	import Citations from './Citations.svelte';
 	import CodeExecutions from './CodeExecutions.svelte';
 	import ContentRenderer from './ContentRenderer.svelte';
-	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
 	import { fade } from 'svelte/transition';
-	import { flyAndScale } from '$lib/utils/transitions';
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
@@ -113,7 +91,6 @@
 			load_duration?: number;
 			usage?: unknown;
 		};
-		annotation?: { type: string; rating: number };
 	}
 
 	export let chatId = '';
@@ -172,7 +149,6 @@
 	export let compactPreview = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
-	export let onInsertToNote: ((content: string) => void) | null = null;
 
 	let citationsElement: HTMLDivElement;
 
@@ -199,14 +175,6 @@
 
 	let messageIndexEdit = false;
 
-	let speaking = false;
-	let speakingIdx: number | undefined;
-
-	let loadingSpeech = false;
-	let speakAbort: AbortController | null = null;
-
-	let showRateComment = false;
-
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
 
@@ -217,145 +185,6 @@
 		const res = await _copyToClipboard(text, null, $settings?.copyFormatted ?? false);
 		if (res) {
 			toast.success($i18n.t('Copying to clipboard was successful!'));
-		}
-	};
-
-	const stopAudio = () => {
-		speakAbort?.abort();
-		speakAbort = null;
-
-		try {
-			speechSynthesis.cancel();
-			$audioQueue?.stop();
-		} catch {}
-
-		speaking = false;
-		speakingIdx = undefined;
-		loadingSpeech = false;
-	};
-
-	// Resolve voice: model-specific > user settings > config default
-	const getVoiceId = () =>
-		model?.info?.meta?.tts?.voice ??
-		($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice
-			? ($settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice)
-			: $config?.audio?.tts?.voice);
-
-	const speak = async () => {
-		const content = visibleResponseContent;
-		if (!content.trim().length) {
-			toast.info($i18n.t('No content to speak'));
-			return;
-		}
-
-		stopAudio();
-		speakAbort = new AbortController();
-		const { signal } = speakAbort;
-
-		speaking = true;
-
-		if ($config.audio.tts.engine === '') {
-			let voices = [];
-			const getVoicesLoop = setInterval(() => {
-				voices = speechSynthesis.getVoices();
-				if (voices.length > 0) {
-					clearInterval(getVoicesLoop);
-
-					const voice = voices.find((v) => v.voiceURI === getVoiceId());
-					const speech = new SpeechSynthesisUtterance(content);
-					speech.rate = $settings.audio?.tts?.playbackRate ?? 1;
-
-					speech.onend = () => {
-						speaking = false;
-						if ($settings.conversationMode) {
-							document.getElementById('voice-input-button')?.click();
-						}
-					};
-
-					if (voice) {
-						speech.voice = voice;
-					}
-
-					speechSynthesis.speak(speech);
-				}
-			}, 100);
-		} else {
-			$audioQueue.setId(`${message.id}`);
-			$audioQueue.setPlaybackRate($settings.audio?.tts?.playbackRate ?? 1);
-			$audioQueue.onStopped = () => {
-				speaking = false;
-				speakingIdx = undefined;
-			};
-
-			loadingSpeech = true;
-			const messageContentParts: string[] = getMessageContentParts(
-				content,
-				$config?.audio?.tts?.split_on ?? 'punctuation'
-			);
-
-			if (!messageContentParts.length) {
-				toast.info($i18n.t('No content to speak'));
-				speaking = false;
-				loadingSpeech = false;
-				return;
-			}
-
-			const voiceId = getVoiceId();
-			console.debug('Prepared message content for TTS', messageContentParts, 'voice:', voiceId);
-
-			if ($settings.audio?.tts?.engine === 'browser-kokoro') {
-				if (!$TTSWorker) {
-					await TTSWorker.set(
-						new KokoroWorker({
-							dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-						})
-					);
-
-					await $TTSWorker.init();
-				}
-
-				for (const [, sentence] of messageContentParts.entries()) {
-					if (signal.aborted) return;
-
-					const url = await $TTSWorker
-						.generate({ text: sentence, voice: voiceId })
-						.catch((error) => {
-							console.error(error);
-							toast.error(`${error}`);
-							speaking = false;
-							loadingSpeech = false;
-						});
-
-					if (signal.aborted) return;
-
-					if (url && speaking) {
-						$audioQueue.enqueue(url);
-						loadingSpeech = false;
-					}
-				}
-			} else {
-				for (const [, sentence] of messageContentParts.entries()) {
-					if (signal.aborted) return;
-
-					const res = await synthesizeOpenAISpeech(localStorage.token, voiceId, sentence).catch(
-						(error) => {
-							console.error(error);
-							toast.error(`${error}`);
-							speaking = false;
-							loadingSpeech = false;
-						}
-					);
-
-					if (signal.aborted) return;
-
-					if (res && speaking) {
-						const blob = await res.blob();
-						const url = URL.createObjectURL(blob);
-						$audioQueue.enqueue(url);
-						loadingSpeech = false;
-					}
-				}
-			}
 		}
 	};
 
@@ -447,126 +276,6 @@
 		editedContent = '';
 		editedOutput = null;
 		await tick();
-	};
-
-	let feedbackLoading = false;
-
-	const feedbackHandler = async (rating: number | null = null, details: object | null = null) => {
-		feedbackLoading = true;
-		console.log('Feedback', rating, details);
-
-		const updatedMessage = {
-			...message,
-			annotation: {
-				...(message?.annotation ?? {}),
-				...(rating !== null ? { rating: rating } : {}),
-				...(details ? details : {})
-			}
-		};
-
-		const chat = await getChatById(localStorage.token, chatId).catch((error) => {
-			toast.error(`${error}`);
-		});
-		if (!chat) {
-			return;
-		}
-
-		const messages = createMessagesList(history, message.id);
-
-		let feedbackItem = {
-			type: 'rating',
-			data: {
-				...(updatedMessage?.annotation ? updatedMessage.annotation : {}),
-				model_id: message?.selectedModelId ?? message.model,
-				...(history.messages[message.parentId].childrenIds.length > 1
-					? {
-							sibling_model_ids: history.messages[message.parentId].childrenIds
-								.filter((id) => id !== message.id)
-								.map((id) => history.messages[id]?.selectedModelId ?? history.messages[id].model)
-						}
-					: {})
-			},
-			meta: {
-				arena: message ? message.arena : false,
-				model_id: message.model,
-				message_id: message.id,
-				message_index: messages.length,
-				chat_id: chatId
-			},
-			snapshot: {
-				chat: chat
-			}
-		};
-
-		const baseModels = [
-			feedbackItem.data.model_id,
-			...(feedbackItem.data.sibling_model_ids ?? [])
-		].reduce((acc, modelId) => {
-			const model = $models.find((m) => m.id === modelId);
-			if (model) {
-				acc[model.id] = model?.info?.base_model_id ?? null;
-			} else {
-				// Log or handle cases where corresponding model is not found
-				console.warn(`Model with ID ${modelId} not found`);
-			}
-			return acc;
-		}, {});
-		feedbackItem.meta.base_models = baseModels;
-
-		let feedback = null;
-		if (message?.feedbackId) {
-			feedback = await updateFeedbackById(
-				localStorage.token,
-				message.feedbackId,
-				feedbackItem
-			).catch((error) => {
-				toast.error(`${error}`);
-			});
-		} else {
-			feedback = await createNewFeedback(localStorage.token, feedbackItem).catch((error) => {
-				toast.error(`${error}`);
-			});
-
-			if (feedback) {
-				updatedMessage.feedbackId = feedback.id;
-			}
-		}
-
-		console.log(updatedMessage);
-		saveMessage(message.id, updatedMessage);
-
-		await tick();
-
-		if (!details) {
-			showRateComment = true;
-
-			if (!updatedMessage.annotation?.tags && (message?.content ?? '') !== '') {
-				// attempt to generate tags
-				const tags = await generateTags(localStorage.token, message.model, messages, chatId).catch(
-					(error) => {
-						console.error(error);
-						return [];
-					}
-				);
-				console.log(tags);
-
-				if (tags) {
-					updatedMessage.annotation.tags = tags;
-					feedbackItem.data.tags = tags;
-
-					saveMessage(message.id, updatedMessage);
-					await updateFeedbackById(
-						localStorage.token,
-						updatedMessage.feedbackId,
-						feedbackItem
-					).catch((error) => {
-						toast.error(`${error}`);
-					});
-				}
-			}
-		}
-
-		feedbackLoading = false;
 	};
 
 	const deleteMessageHandler = async () => {
@@ -1090,110 +799,6 @@
 									</button>
 								</Tooltip>
 
-								{#if onInsertToNote && visibleResponseContent}
-									<Tooltip content={$i18n.t('Insert into note')} placement="bottom">
-										<button
-											aria-label={$i18n.t('Insert into note')}
-											class="{isLastMessage || ($settings?.highContrastMode ?? false)
-												? 'visible'
-												: 'hover-reveal'} rounded-lg px-2 py-1.5 text-xs text-gray-500 transition hover:bg-black/5 hover:text-black dark:hover:bg-white/5 dark:hover:text-white"
-											on:click={() => {
-												onInsertToNote?.(visibleResponseContent);
-											}}
-										>
-											{$i18n.t('Insert')}
-										</button>
-									</Tooltip>
-								{/if}
-
-								{#if !readOnly && ($user?.role === 'admin' || ($user?.permissions?.chat?.tts ?? true))}
-									<Tooltip content={$i18n.t('Read Aloud')} placement="bottom">
-										<button
-											aria-label={$i18n.t('Read Aloud')}
-											id="speak-button-{message.id}"
-											class="{isLastMessage || ($settings?.highContrastMode ?? false)
-												? 'visible'
-												: 'hover-reveal'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition"
-											on:click={() => {
-												if (!loadingSpeech) {
-													if (speaking) {
-														stopAudio();
-													} else {
-														speak();
-													}
-												}
-											}}
-										>
-											{#if loadingSpeech}
-												<svg
-													class=" w-4 h-4"
-													fill="currentColor"
-													viewBox="0 0 24 24"
-													aria-hidden="true"
-													xmlns="http://www.w3.org/2000/svg"
-												>
-													<style>
-														.spinner_S1WN {
-															animation: spinner_MGfb 0.8s linear infinite;
-															animation-delay: -0.8s;
-														}
-
-														.spinner_Km9P {
-															animation-delay: -0.65s;
-														}
-
-														.spinner_JApP {
-															animation-delay: -0.5s;
-														}
-
-														@keyframes spinner_MGfb {
-															93.75%,
-															100% {
-																opacity: 0.2;
-															}
-														}
-													</style>
-													<circle class="spinner_S1WN" cx="4" cy="12" r="3" />
-													<circle class="spinner_S1WN spinner_Km9P" cx="12" cy="12" r="3" />
-													<circle class="spinner_S1WN spinner_JApP" cx="20" cy="12" r="3" />
-												</svg>
-											{:else if speaking}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													fill="none"
-													viewBox="0 0 24 24"
-													aria-hidden="true"
-													stroke-width="2.3"
-													stroke="currentColor"
-													class="w-4 h-4"
-												>
-													<path
-														stroke-linecap="round"
-														stroke-linejoin="round"
-														d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"
-													/>
-												</svg>
-											{:else}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													fill="none"
-													viewBox="0 0 24 24"
-													aria-hidden="true"
-													stroke-width="2.3"
-													stroke="currentColor"
-													class="w-4 h-4"
-												>
-													<path
-														stroke-linecap="round"
-														stroke-linejoin="round"
-														d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
-													/>
-												</svg>
-											{/if}
-										</button>
-									</Tooltip>
-								{/if}
-
 								{#if message.usage}
 									<Tooltip
 										content={message.usage
@@ -1239,84 +844,6 @@
 								{/if}
 
 								{#if !readOnly}
-									{#if !$temporaryChatEnabled && ($config?.features.enable_message_rating ?? true) && ($user?.role === 'admin' || ($user?.permissions?.chat?.rate_response ?? true))}
-										<Tooltip content={$i18n.t('Good Response')} placement="bottom">
-											<button
-												aria-label={$i18n.t('Good Response')}
-												class="{isLastMessage || ($settings?.highContrastMode ?? false)
-													? 'visible'
-													: 'hover-reveal'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
-													message?.annotation?.rating ?? ''
-												).toString() === '1'
-													? 'bg-gray-100 dark:bg-gray-800'
-													: ''} dark:hover:text-white hover:text-black transition disabled:cursor-progress disabled:hover:bg-transparent"
-												disabled={feedbackLoading}
-												on:click={async () => {
-													await feedbackHandler(1);
-													window.setTimeout(() => {
-														document
-															.getElementById(`message-feedback-${message.id}`)
-															?.scrollIntoView();
-													}, 0);
-												}}
-											>
-												<svg
-													aria-hidden="true"
-													stroke="currentColor"
-													fill="none"
-													stroke-width="2.3"
-													viewBox="0 0 24 24"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="w-4 h-4"
-													xmlns="http://www.w3.org/2000/svg"
-												>
-													<path
-														d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"
-													/>
-												</svg>
-											</button>
-										</Tooltip>
-
-										<Tooltip content={$i18n.t('Bad Response')} placement="bottom">
-											<button
-												aria-label={$i18n.t('Bad Response')}
-												class="{isLastMessage || ($settings?.highContrastMode ?? false)
-													? 'visible'
-													: 'hover-reveal'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
-													message?.annotation?.rating ?? ''
-												).toString() === '-1'
-													? 'bg-gray-100 dark:bg-gray-800'
-													: ''} dark:hover:text-white hover:text-black transition disabled:cursor-progress disabled:hover:bg-transparent"
-												disabled={feedbackLoading}
-												on:click={async () => {
-													await feedbackHandler(-1);
-													window.setTimeout(() => {
-														document
-															.getElementById(`message-feedback-${message.id}`)
-															?.scrollIntoView();
-													}, 0);
-												}}
-											>
-												<svg
-													aria-hidden="true"
-													stroke="currentColor"
-													fill="none"
-													stroke-width="2.3"
-													viewBox="0 0 24 24"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="w-4 h-4"
-													xmlns="http://www.w3.org/2000/svg"
-												>
-													<path
-														d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"
-													/>
-												</svg>
-											</button>
-										</Tooltip>
-									{/if}
-
 									{#if isLastMessage && ($user?.role === 'admin' || ($user?.permissions?.chat?.continue_response ?? true))}
 										<Tooltip content={$i18n.t('Continue Response')} placement="bottom">
 											<button
@@ -1360,7 +887,6 @@
 												type="button"
 												class="hidden regenerate-response-button"
 												on:click={() => {
-													showRateComment = false;
 													regenerateResponse(message);
 
 													(model?.actions ?? []).forEach((action) => {
@@ -1379,7 +905,6 @@
 
 											<RegenerateMenu
 												onRegenerate={(prompt = null) => {
-													showRateComment = false;
 													regenerateResponse(message, prompt);
 
 													(model?.actions ?? []).forEach((action) => {
@@ -1430,7 +955,6 @@
 														? 'visible'
 														: 'hover-reveal'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-white hover:text-black transition regenerate-response-button"
 													on:click={() => {
-														showRateComment = false;
 														regenerateResponse(message);
 
 														(model?.actions ?? []).forEach((action) => {
@@ -1588,18 +1112,6 @@
 							{/if}
 						{/if}
 					</div>
-
-					{#if message.done && showRateComment}
-						<RateComment
-							bind:message
-							bind:show={showRateComment}
-							on:save={async (e) => {
-								await feedbackHandler(null, {
-									...e.detail
-								});
-							}}
-						/>
-					{/if}
 
 					{#if (isLastMessage || ($settings?.keepFollowUpPrompts ?? false)) && message.done && !readOnly && (message?.followUps ?? []).length > 0}
 						<div class="my-2.5" in:fade={{ duration: 100 }}>
