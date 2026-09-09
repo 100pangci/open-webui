@@ -26,7 +26,6 @@ from open_webui.constants import ERROR_MESSAGES
 from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_db_context, get_async_session
 from open_webui.models.access_grants import AccessGrants
-from open_webui.models.channels import Channels
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.models.files import (
@@ -37,10 +36,8 @@ from open_webui.models.files import (
     Files,
 )
 from open_webui.models.groups import Groups
-from open_webui.models.knowledge import Knowledges
 from open_webui.models.users import Users
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
-from open_webui.routers.audio import transcribe
 from open_webui.routers.retrieval import ProcessFileForm, process_file
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -143,29 +140,12 @@ async def process_uploaded_file(
                 if _is_text_file(file_path):
                     content_type = 'text/plain'
 
-            stt_supported = await Config.get('audio.stt.supported_content_types', [])
             content_extraction_engine = await Config.get('rag.content_extraction_engine')
             content_extraction_supported_media_mime_types = await Config.get(
                 'rag.content_extraction.supported_media_mime_types'
             )
 
-            if content_type and strict_match_mime_type(stt_supported, content_type):
-                # Audio / STT-supported files → transcribe then index
-                file_path_processed = await asyncio.to_thread(Storage.get_file, file_path)
-                result = await transcribe(
-                    request,
-                    file_path_processed,
-                    file_metadata,
-                    user,
-                )
-                await process_file(
-                    request,
-                    ProcessFileForm(file_id=file_item.id, content=result.get('text', '')),
-                    user=user,
-                    db=db_session,
-                )
-
-            elif (
+            if (
                 content_type
                 and content_type.startswith(('image/', 'video/'))
                 and not _media_supported_for_extraction(
@@ -197,55 +177,6 @@ async def process_uploaded_file(
                     user=user,
                     db=db_session,
                 )
-
-            # Auto-link to Knowledge Collection when uploaded from one (#24807).
-            # Mirrors POST /knowledge/{id}/file/add so linking doesn't depend
-            # on the frontend staying connected after upload.
-            knowledge_id = file_metadata.get('knowledge_id')
-            if knowledge_id:
-                try:
-                    # Gate like POST /knowledge/{id}/file/add: a client-supplied
-                    # metadata.knowledge_id must not let a non-writer attach files (CWE-862/863).
-                    knowledge = await Knowledges.get_knowledge_by_id(id=knowledge_id, db=db_session)
-                    can_write = bool(knowledge) and (
-                        knowledge.user_id == user.id
-                        or user.role == 'admin'
-                        or await AccessGrants.has_access(
-                            user_id=user.id,
-                            resource_type='knowledge',
-                            resource_id=knowledge.id,
-                            permission='write',
-                            db=db_session,
-                        )
-                    )
-                    if not can_write:
-                        log.warning(
-                            f'Refusing to auto-link file {file_item.id} to knowledge '
-                            f'{knowledge_id}: user {user.id} lacks write access'
-                        )
-                    else:
-                        # Keep the generic file status stream open until the
-                        # KB-specific vector write and durable link both finish.
-                        await Files.update_file_data_by_id(file_item.id, {'status': 'processing'}, db=db_session)
-                        await process_file(
-                            request,
-                            ProcessFileForm(file_id=file_item.id, collection_name=knowledge_id),
-                            user=user,
-                            db=db_session,
-                        )
-                        knowledge_file = await Knowledges.add_file_to_knowledge_by_id(
-                            knowledge_id=knowledge_id,
-                            file_id=file_item.id,
-                            user_id=user.id,
-                            directory_id=file_metadata.get('directory_id'),
-                            db=db_session,
-                        )
-                        if not knowledge_file:
-                            raise Exception(f'Failed to link file {file_item.id} to knowledge {knowledge_id}')
-                        log.info('Linked file %s to knowledge %s', file_item.id, knowledge_id)
-                except Exception as e:
-                    log.warning(f'Failed to link file {file_item.id} to knowledge {knowledge_id}: {e}')
-                    raise
 
         except Exception as e:
             log.error(f'Error processing file: {file_item.id}')
@@ -417,11 +348,6 @@ async def upload_file_handler(
             ),
             db=db,
         )
-
-        if 'channel_id' in file_metadata:
-            channel = await Channels.get_channel_by_id_and_user_id(file_metadata['channel_id'], user.id, db=db)
-            if channel:
-                await Channels.add_file_to_channel_by_id(channel.id, file_item.id, user.id, db=db)
 
         if process:
             if background_tasks and process_in_background:
@@ -737,28 +663,6 @@ async def update_file_data_content_by_id(
             log.exception(e)
             log.error(f'Error processing file: {file.id}')
 
-        # Propagate content change to all knowledge collections referencing
-        # this file.  Without this the old embeddings remain in the knowledge
-        # collection and RAG returns both stale and current data (#20558).
-        knowledges = await Knowledges.get_knowledges_by_file_id(id, db=db)
-        for knowledge in knowledges:
-            try:
-                old_vectors = await ASYNC_VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={'file_id': id})
-                old_vector_ids = old_vectors.ids[0] if old_vectors and old_vectors.ids else []
-
-                # Re-add from the now-updated file-{file_id} collection before
-                # removing old vectors, so a failed reindex keeps the KB usable.
-                await process_file(
-                    request,
-                    ProcessFileForm(file_id=id, collection_name=knowledge.id),
-                    user=user,
-                    db=db,
-                )
-                if old_vector_ids:
-                    await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=knowledge.id, ids=old_vector_ids)
-            except Exception as e:
-                log.warning(f'Failed to update knowledge {knowledge.id} after content change for file {id}: {e}')
-
         await publish_event(
             request,
             EVENTS.FILE_CONTENT_UPDATED,
@@ -1010,19 +914,6 @@ async def delete_file_by_id(
         )
 
     if file.user_id == user.id or user.role == 'admin' or await has_access_to_file(id, 'write', user, db=db):
-        # Clean up KB associations and embeddings before deleting
-        knowledges = await Knowledges.get_knowledges_by_file_id(id, db=db)
-        for knowledge in knowledges:
-            # Remove KB-file relationship
-            await Knowledges.remove_file_from_knowledge_by_id(knowledge.id, id, db=db)
-            # Clean KB embeddings (same logic as /knowledge/{id}/file/remove)
-            try:
-                await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=knowledge.id, filter={'file_id': id})
-                if file.hash:
-                    await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=knowledge.id, filter={'hash': file.hash})
-            except Exception as e:
-                log.debug('KB embedding cleanup for %s: %s', knowledge.id, e)
-
         result = await Files.delete_file_by_id(id, db=db)
         if result:
             try:

@@ -7,10 +7,25 @@ import logging
 import alembic.context
 from open_webui.env import DATABASE_PASSWORD, DATABASE_URL, LOG_FORMAT
 from open_webui.internal.db import enable_iam_token_auth, extract_ssl_params_from_url, reattach_ssl_params_to_url
-from open_webui.models.auths import Auth
-from open_webui.models.calendar import Calendar, CalendarEvent, CalendarEventAttendee  # noqa: F401
+
+# Import every remaining model module so autogenerate sees the full metadata.
+# Model registration happens as an import side effect (shared Base.metadata).
+from open_webui.models.access_grants import AccessGrant  # noqa: F401
+from open_webui.models.auths import Auth  # noqa: F401
 from open_webui.models.chat_messages import ChatMessage  # noqa: F401
 from open_webui.models.chats import Chat  # noqa: F401
+from open_webui.models.config import Config  # noqa: F401
+from open_webui.models.files import File  # noqa: F401
+from open_webui.models.folders import Folder  # noqa: F401
+from open_webui.models.functions import Function  # noqa: F401
+from open_webui.models.groups import Group  # noqa: F401
+from open_webui.models.models import Model  # noqa: F401
+from open_webui.models.oauth_sessions import OAuthSession  # noqa: F401
+from open_webui.models.prompt_history import PromptHistory  # noqa: F401
+from open_webui.models.shared_chats import SharedChat  # noqa: F401
+from open_webui.models.tags import Tag  # noqa: F401
+from open_webui.models.tools import Tool  # noqa: F401
+from open_webui.models.users import User  # noqa: F401
 from sqlalchemy import create_engine, engine_from_config, pool
 
 alembic_config = alembic.context.config

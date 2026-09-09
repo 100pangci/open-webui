@@ -12,7 +12,6 @@ from typing import Any, Literal
 from open_webui.env import ENABLE_ADMIN_CHAT_ACCESS
 from open_webui.internal.db import Base, JSONField, get_async_db_context
 from open_webui.models.access_grants import AccessGrants
-from open_webui.models.automations import AutomationRun
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
 from open_webui.models.folders import Folders
 from open_webui.models.tags import Tag, TagModel, Tags
@@ -604,39 +603,6 @@ class ChatTable:
                 )
             )
             return list(result.scalars().all())
-
-    async def get_internal_chat_by_note_id(
-        self, note_id: str, user_id: str, db: AsyncSession | None = None
-    ) -> ChatModel | None:
-        async with get_async_db_context(db) as session:
-            result = await session.execute(
-                select(Chat)
-                .where(
-                    Chat.user_id == user_id,
-                    Chat.meta['internal'].as_boolean().is_(True),
-                    Chat.meta['type'].as_string() == 'note',
-                    Chat.meta['note_id'].as_string() == note_id,
-                )
-                .order_by(Chat.updated_at.desc(), Chat.created_at.desc())
-            )
-            chat = result.scalars().first()
-            return ChatModel.model_validate(chat) if chat else None
-
-    async def get_internal_chats_by_note_id(
-        self, note_id: str, user_id: str, db: AsyncSession | None = None
-    ) -> list[ChatModel]:
-        async with get_async_db_context(db) as session:
-            result = await session.execute(
-                select(Chat)
-                .where(
-                    Chat.user_id == user_id,
-                    Chat.meta['internal'].as_boolean().is_(True),
-                    Chat.meta['type'].as_string() == 'note',
-                    Chat.meta['note_id'].as_string() == note_id,
-                )
-                .order_by(Chat.updated_at.desc(), Chat.created_at.desc())
-            )
-            return [ChatModel.model_validate(chat) for chat in result.scalars().all()]
 
     def _chat_import_form_to_chat_model(self, user_id: str, form_data: ChatImportForm) -> ChatModel:
         id = str(uuid.uuid4())
@@ -2481,7 +2447,6 @@ class ChatTable:
     async def delete_chat_by_id(self, id: str, db: AsyncSession | None = None) -> bool:
         try:
             async with get_async_db_context(db) as session:
-                await session.execute(update(AutomationRun).filter_by(chat_id=id).values(chat_id=None))
                 await session.execute(delete(ChatMessage).filter_by(chat_id=id))
                 await session.execute(delete(Chat).filter_by(id=id))
                 await session.commit()
@@ -2493,7 +2458,6 @@ class ChatTable:
     async def delete_chat_by_id_and_user_id(self, id: str, user_id: str, db: AsyncSession | None = None) -> bool:
         try:
             async with get_async_db_context(db) as session:
-                await session.execute(update(AutomationRun).filter_by(chat_id=id).values(chat_id=None))
                 await session.execute(delete(ChatMessage).filter_by(chat_id=id))
                 await session.execute(delete(Chat).filter_by(id=id, user_id=user_id))
                 await session.commit()
@@ -2507,12 +2471,6 @@ class ChatTable:
             async with get_async_db_context(db) as session:
                 await self.delete_shared_chats_by_user_id(user_id, db=session)
 
-                chat_id_subquery = select(Chat.id).filter_by(user_id=user_id).scalar_subquery()
-                await session.execute(
-                    update(AutomationRun)
-                    .filter(AutomationRun.chat_id.in_(select(Chat.id).filter_by(user_id=user_id)))
-                    .values(chat_id=None)
-                )
                 await session.execute(
                     delete(ChatMessage).filter(ChatMessage.chat_id.in_(select(Chat.id).filter_by(user_id=user_id)))
                 )
@@ -2529,9 +2487,6 @@ class ChatTable:
         try:
             async with get_async_db_context(db) as session:
                 chat_ids_stmt = select(Chat.id).filter_by(user_id=user_id, folder_id=folder_id)
-                await session.execute(
-                    update(AutomationRun).filter(AutomationRun.chat_id.in_(chat_ids_stmt)).values(chat_id=None)
-                )
                 await session.execute(delete(ChatMessage).filter(ChatMessage.chat_id.in_(chat_ids_stmt)))
                 await session.execute(delete(Chat).filter_by(user_id=user_id, folder_id=folder_id))
                 await session.commit()

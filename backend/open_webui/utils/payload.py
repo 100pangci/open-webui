@@ -94,7 +94,6 @@ def apply_params_to_form_data(form_data: dict, model: dict, params: dict | None 
         'reasoning_tags': list,
         'compact_token_threshold': int,
         'system': str,
-        'note_id': str,
         'tool_approval_mode': str,
     }
 
@@ -149,7 +148,6 @@ def remove_open_webui_params(params: dict) -> dict:
         'reasoning_tags': list,
         'compact_token_threshold': int,
         'system': str,
-        'note_id': str,
         'tool_approval_mode': str,
     }
 

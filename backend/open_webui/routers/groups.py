@@ -17,7 +17,6 @@ from open_webui.models.groups import (
     GroupUpdateForm,
     UserIdsForm,
 )
-from open_webui.models.knowledge import Knowledges
 from open_webui.models.models import Models
 from open_webui.models.tools import Tools
 from open_webui.models.users import UserInfoResponse, Users
@@ -362,16 +361,6 @@ async def preview_group_access(
         db=db,
     )
 
-    all_knowledge = await Knowledges.get_knowledge_bases(db=db)
-    accessible_knowledge_ids = await AccessGrants.get_accessible_resource_ids(
-        user_id='',
-        resource_type='knowledge',
-        resource_ids=[k.id for k in all_knowledge],
-        permission='read',
-        user_group_ids=group_ids,
-        db=db,
-    )
-
     all_tools = await Tools.get_tools(defer_content=True, db=db)
     accessible_tool_ids = await AccessGrants.get_accessible_resource_ids(
         user_id='',
@@ -389,10 +378,6 @@ async def preview_group_access(
         'models': {
             'items': [{'id': m.id, 'name': m.name} for m in active_models if m.id in accessible_model_ids],
             'total': len(active_models),
-        },
-        'knowledge': {
-            'items': [{'id': k.id, 'name': k.name} for k in all_knowledge if k.id in accessible_knowledge_ids],
-            'total': len(all_knowledge),
         },
         'tools': {
             'items': [{'id': t.id, 'name': t.name} for t in all_tools if t.id in accessible_tool_ids],

@@ -7,7 +7,6 @@ import sys
 import time
 from typing import Any
 
-import pycrdt as Y
 import socketio
 from open_webui.config import (
     CORS_ALLOW_ORIGIN,
@@ -30,19 +29,13 @@ from open_webui.env import (
     WEBSOCKET_SERVER_PING_INTERVAL,
     WEBSOCKET_SERVER_PING_TIMEOUT,
 )
-from open_webui.models.access_grants import AccessGrants
-from open_webui.models.channels import Channels
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
-from open_webui.models.notes import Notes, NoteUpdateForm
-from open_webui.models.users import UserNameResponse, Users
-from open_webui.socket.utils import RedisDict, RedisLock, YdocManager
-from open_webui.tasks import create_task, stop_item_tasks
-from open_webui.utils.access_control import has_permission
+from open_webui.models.users import Users
+from open_webui.socket.utils import RedisDict, RedisLock
 from open_webui.utils.auth import get_verified_user_by_token
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.json_codec import SOCKETIO_JSON
-from open_webui.utils.misc import get_output_text
 from open_webui.utils.redis import (
     build_sentinel_url,
     get_redis_connection,
@@ -182,12 +175,6 @@ else:
 
     aquire_func = release_func = renew_func = lambda: True
     session_aquire_func = session_release_func = session_renew_func = lambda: True
-
-
-YDOC_MANAGER = YdocManager(
-    redis=REDIS,
-    redis_key_prefix=f'{REDIS_KEY_PREFIX}:ydoc:documents',
-)
 
 
 def get_session_pool_batches():
@@ -460,13 +447,6 @@ async def user_join(sid, data):
     await sio.save_session(sid, {'user': socket_user})
     await sio.enter_room(sid, f'user:{user.id}')
 
-    # Join all the channels only if user has channels permission
-    if user.role == 'admin' or await has_permission(user.id, 'features.channels'):
-        channels = await Channels.get_channels_by_user_id(user.id)
-        log.debug('channels=%r', channels)
-        for channel in channels:
-            await sio.enter_room(sid, f'channel:{channel.id}')
-
     return {'id': user.id, 'name': user.name}
 
 
@@ -476,93 +456,6 @@ async def heartbeat(sid, data):
     if user:
         SESSION_POOL[sid] = {**user, 'last_seen_at': int(time.time())}
         await Users.update_last_active_by_id(user['id'])
-
-
-@sio.on('join-channels')
-async def join_channel(sid, data):
-    auth = data['auth'] if 'auth' in data else None
-    if not auth or 'token' not in auth:
-        return
-
-    environ = sio.get_environ(sid) or {}
-    scope = environ.get('asgi.scope') or {}
-    fastapi_app = scope.get('app')
-    redis = getattr(getattr(fastapi_app, 'state', None), 'redis', None) or REDIS
-    user = await get_verified_user_by_token(auth['token'], redis)
-    if not user:
-        return
-
-    # Join all the channels only if user has channels permission
-    if user.role == 'admin' or await has_permission(user.id, 'features.channels'):
-        channels = await Channels.get_channels_by_user_id(user.id)
-        log.debug('channels=%r', channels)
-        for channel in channels:
-            await sio.enter_room(sid, f'channel:{channel.id}')
-
-
-@sio.on('join-note')
-async def join_note(sid, data):
-    auth = data['auth'] if 'auth' in data else None
-    if not auth or 'token' not in auth:
-        return
-
-    environ = sio.get_environ(sid) or {}
-    scope = environ.get('asgi.scope') or {}
-    fastapi_app = scope.get('app')
-    redis = getattr(getattr(fastapi_app, 'state', None), 'redis', None) or REDIS
-    user = await get_verified_user_by_token(auth['token'], redis)
-    if not user:
-        return
-
-    note = await Notes.get_note_by_id(data['note_id'])
-    if not note:
-        log.error(f'Note {data["note_id"]} not found for user {user.id}')
-        return
-
-    if (
-        user.role != 'admin'
-        and user.id != note.user_id
-        and not await AccessGrants.has_access(
-            user_id=user.id,
-            resource_type='note',
-            resource_id=note.id,
-            permission='read',
-        )
-    ):
-        log.error(f'User {user.id} does not have access to note {data["note_id"]}')
-        return
-
-    log.debug('Joining note %s for user %s', note.id, user.id)
-    await sio.enter_room(sid, f'note:{note.id}')
-
-
-@sio.on('events:channel')
-async def channel_events(sid, data):
-    room = f'channel:{data["channel_id"]}'
-    if sid not in (get_room_sid_map(sio.manager, '/', room) or {}):
-        return
-
-    event_data = data['data']
-    event_type = event_data['type']
-
-    user = await get_socket_session_user(sid)
-
-    if not user:
-        return
-
-    if event_type == 'typing':
-        await sio.emit(
-            'events:channel',
-            {
-                'channel_id': data['channel_id'],
-                'message_id': data.get('message_id', None),
-                'data': event_data,
-                'user': UserNameResponse(**user).model_dump(),
-            },
-            room=room,
-        )
-    elif event_type == 'last_read_at':
-        await Channels.update_member_last_read_at(data['channel_id'], user['id'])
 
 
 async def get_folder_unread_counts(user_id: str) -> dict[str, int]:
@@ -615,312 +508,6 @@ async def chat_events(sid, data):
             },
             room=f'user:{user["id"]}',
         )
-        try:
-            from open_webui.utils.timers import cancel_timers_for_chat
-
-            await cancel_timers_for_chat(data['chat_id'], 'chat.read', user['id'])
-        except Exception:
-            log.exception('Failed to cancel chat.read timers for chat %s', data.get('chat_id'))
-
-
-def normalize_document_id(document_id: str) -> str:
-    """Canonicalize document IDs to prevent auth bypass via prefix variants.
-
-    YdocManager normalizes storage keys by replacing ":" with "_", so
-    "note_abc" and "note:abc" resolve to the same underlying document.
-    We must rewrite underscore-prefixed IDs back to the colon form so
-    that authorization checks (which key on "note:") always fire.
-    """
-    if document_id.startswith('note_'):
-        document_id = 'note:' + document_id[5:]
-    return document_id
-
-
-@sio.on('ydoc:document:join')
-async def ydoc_document_join(sid, data):
-    """Handle user joining a document"""
-    user = await get_socket_session_user(sid)
-    if not user:
-        return
-
-    try:
-        document_id = normalize_document_id(data['document_id'])
-
-        if document_id.startswith('note:'):
-            note_id = document_id.split(':')[1]
-            note = await Notes.get_note_by_id(note_id)
-            if not note:
-                log.error(f'Note {note_id} not found')
-                return
-
-            if (
-                user.get('role') != 'admin'
-                and user.get('id') != note.user_id
-                and not await AccessGrants.has_access(
-                    user_id=user.get('id'),
-                    resource_type='note',
-                    resource_id=note.id,
-                    permission='read',
-                )
-            ):
-                log.error(f'User {user.get("id")} does not have access to note {note_id}')
-                return
-
-        user_id = data.get('user_id', sid)
-        user_name = data.get('user_name', 'Anonymous')
-        user_color = data.get('user_color', '#000000')
-
-        log.info('User %s joining document %s', user_id, document_id)
-        await YDOC_MANAGER.add_user(document_id=document_id, user_id=sid)
-
-        # Join Socket.IO room
-        await sio.enter_room(sid, f'doc_{document_id}')
-
-        active_session_ids = get_session_ids_from_room(f'doc_{document_id}')
-
-        # Get the Yjs document state
-        ydoc = Y.Doc()
-        updates = await YDOC_MANAGER.get_updates(document_id)
-        for update in updates:
-            ydoc.apply_update(bytes(update))
-
-        # Encode the entire document state as an update
-        state_update = ydoc.get_update()
-        await sio.emit(
-            'ydoc:document:state',
-            {
-                'document_id': document_id,
-                'state': list(state_update),  # Convert bytes to list for JSON
-                'sessions': active_session_ids,
-            },
-            room=sid,
-        )
-
-        # Notify other users about the new user
-        await sio.emit(
-            'ydoc:user:joined',
-            {
-                'document_id': document_id,
-                'user_id': user_id,
-                'user_name': user_name,
-                'user_color': user_color,
-            },
-            room=f'doc_{document_id}',
-            skip_sid=sid,
-        )
-
-        log.info('User %s successfully joined document %s', user_id, document_id)
-
-    except Exception as e:
-        log.error(f'Error in yjs_document_join: {e}')
-        await sio.emit('error', {'message': 'Failed to join document'}, room=sid)
-
-
-async def document_save_handler(document_id, data, user):
-    document_id = normalize_document_id(document_id)
-
-    if document_id.startswith('note:'):
-        note_id = document_id.split(':')[1]
-        note = await Notes.get_note_by_id(note_id)
-        if not note:
-            log.error(f'Note {note_id} not found')
-            return
-
-        if (
-            user.get('role') != 'admin'
-            and user.get('id') != note.user_id
-            and not await AccessGrants.has_access(
-                user_id=user.get('id'),
-                resource_type='note',
-                resource_id=note.id,
-                permission='write',
-            )
-        ):
-            log.error(f'User {user.get("id")} does not have write access to note {note_id}')
-            return
-
-        await Notes.update_note_by_id(note_id, NoteUpdateForm(data=data))
-
-
-@sio.on('ydoc:document:state')
-async def yjs_document_state(sid, data):
-    """Send the current state of the Yjs document to the user"""
-    try:
-        document_id = data['document_id']
-
-        document_id = normalize_document_id(document_id)
-        room = f'doc_{document_id}'
-
-        active_session_ids = get_session_ids_from_room(room)
-
-        if sid not in active_session_ids:
-            log.warning(f'Session {sid} not in room {room}. Cannot send state.')
-            return
-
-        if not await YDOC_MANAGER.document_exists(document_id):
-            log.warning(f'Document {document_id} not found')
-            return
-
-        # Get the Yjs document state
-        ydoc = Y.Doc()
-        updates = await YDOC_MANAGER.get_updates(document_id)
-        for update in updates:
-            ydoc.apply_update(bytes(update))
-
-        # Encode the entire document state as an update
-        state_update = ydoc.get_update()
-
-        await sio.emit(
-            'ydoc:document:state',
-            {
-                'document_id': document_id,
-                'state': list(state_update),  # Convert bytes to list for JSON
-                'sessions': active_session_ids,
-            },
-            room=sid,
-        )
-    except Exception as e:
-        log.error(f'Error in yjs_document_state: {e}')
-
-
-@sio.on('ydoc:document:update')
-async def yjs_document_update(sid, data):
-    """Handle Yjs document updates"""
-    try:
-        document_id = data['document_id']
-
-        document_id = normalize_document_id(document_id)
-
-        # Verify the sender actually joined this document room
-        room = f'doc_{document_id}'
-        active_session_ids = get_session_ids_from_room(room)
-        if sid not in active_session_ids:
-            log.warning(f'Session {sid} not in room {room}. Rejecting update.')
-            return
-
-        # Verify write permission — room membership only proves read access
-        user = await get_socket_session_user(sid)
-        if not user:
-            return
-
-        if document_id.startswith('note:'):
-            note_id = document_id.split(':')[1]
-            note = await Notes.get_note_by_id(note_id)
-            if not note:
-                log.error(f'Note {note_id} not found')
-                return
-
-            if (
-                user.get('role') != 'admin'
-                and user.get('id') != note.user_id
-                and not await AccessGrants.has_access(
-                    user_id=user.get('id'),
-                    resource_type='note',
-                    resource_id=note.id,
-                    permission='write',
-                )
-            ):
-                log.warning(f'User {user.get("id")} does not have write access to note {note_id}. Rejecting update.')
-                return
-
-        user_id = data.get('user_id', sid)
-
-        update = data['update']  # List of bytes from frontend
-
-        await YDOC_MANAGER.append_to_updates(
-            document_id=document_id,
-            update=update,  # Convert list of bytes to bytes
-        )
-
-        # Broadcast update to all other users in the document
-        await sio.emit(
-            'ydoc:document:update',
-            {
-                'document_id': document_id,
-                'user_id': user_id,
-                'update': update,
-                'socket_id': sid,  # Add socket_id to match frontend filtering
-            },
-            room=f'doc_{document_id}',
-            skip_sid=sid,
-        )
-
-        async def debounced_save():
-            await asyncio.sleep(0.5)
-            await document_save_handler(document_id, data.get('data', {}), user)
-
-        if data.get('data'):
-            # Only drop the pending save when a new one takes its place.
-            # Updates without a content snapshot (the resync a client sends
-            # after rejoining a document) would otherwise cancel the pending
-            # save without scheduling a replacement, so the edits made just
-            # before the resync never reach the database.
-            try:
-                await stop_item_tasks(REDIS, document_id)
-            except Exception:
-                pass
-
-            await create_task(REDIS, debounced_save(), document_id)
-
-    except Exception as e:
-        log.error(f'Error in yjs_document_update: {e}')
-
-
-@sio.on('ydoc:document:leave')
-async def yjs_document_leave(sid, data):
-    """Handle user leaving a document"""
-    user = await get_socket_session_user(sid)
-    if not user:  # authenticated session required (parity with sibling handlers)
-        return
-    try:
-        document_id = normalize_document_id(data['document_id'])
-
-        log.info('User %s leaving document %s', user['id'], document_id)
-
-        # Remove user from the document
-        await YDOC_MANAGER.remove_user(document_id=document_id, user_id=sid)
-
-        # Leave Socket.IO room
-        await sio.leave_room(sid, f'doc_{document_id}')
-
-        # Notify other users; user_id is the authenticated identity, not client-supplied
-        await sio.emit(
-            'ydoc:user:left',
-            {'document_id': document_id, 'user_id': user['id']},
-            room=f'doc_{document_id}',
-        )
-
-        if await YDOC_MANAGER.document_exists(document_id) and len(await YDOC_MANAGER.get_users(document_id)) == 0:
-            log.info('Cleaning up document %s as no users are left', document_id)
-            await YDOC_MANAGER.clear_document(document_id)
-
-    except Exception as e:
-        log.error(f'Error in yjs_document_leave: {e}')
-
-
-@sio.on('ydoc:awareness:update')
-async def yjs_awareness_update(sid, data):
-    """Handle awareness updates (cursors, selections, etc.)"""
-    user = await get_socket_session_user(sid)
-    if not user:  # authenticated session required (parity with sibling handlers)
-        return
-    try:
-        document_id = normalize_document_id(data['document_id'])
-        room = f'doc_{document_id}'
-        if room not in sio.rooms(sid):  # must have joined the document first
-            return
-        update = data['update']
-
-        # Broadcast to the room; user_id is the authenticated identity, not client-supplied
-        await sio.emit(
-            'ydoc:awareness:update',
-            {'document_id': document_id, 'user_id': user['id'], 'update': update},
-            room=room,
-            skip_sid=sid,
-        )
-
-    except Exception as e:
-        log.error(f'Error in yjs_awareness_update: {e}')
 
 
 @sio.event
@@ -937,128 +524,12 @@ async def disconnect(sid, reason=None):
                 else:
                     USAGE_POOL[model_id] = connections
 
-        await YDOC_MANAGER.remove_user_from_all_documents(sid)
     else:
         pass
         # print(f"Unknown session ID {sid} disconnected")
 
 
-async def _make_channel_emitter(request_info):
-    """Event emitter that routes pipeline output to a channel message.
-
-    Translates chat:completion events into channel message:update socket
-    emissions, throttled to avoid flooding with per-token updates.
-    """
-    channel_id = request_info['chat_id'].removeprefix('channel:')
-    message_id = request_info['message_id']
-
-    state = {'last_emit_at': 0.0, 'output': []}
-    THROTTLE_INTERVAL = 0.15  # ~6 updates/sec
-
-    async def _emit_channel_update(
-        content: str,
-        done: bool = False,
-        output: list | None = None,
-        data: dict | None = None,
-    ):
-        from open_webui.models.messages import MessageForm, Messages
-
-        msg = await Messages.get_message_by_id(message_id)
-        if not msg or msg.channel_id != channel_id:
-            return
-
-        update_data = data or ({'output': output} if output else None)
-        update_form = MessageForm(content=content, data=update_data)
-        if done:
-            # Merge done flag into existing meta (preserve model_id etc.)
-            existing_meta = msg.meta or {}
-            update_form = MessageForm(
-                content=content,
-                data=update_data,
-                meta={**existing_meta, 'done': True},
-            )
-
-        await Messages.update_message_by_id(message_id, update_form)
-        message = await Messages.get_message_by_id(message_id)
-        if message:
-            await sio.emit(
-                'events:channel',
-                {
-                    'channel_id': channel_id,
-                    'message_id': message_id,
-                    'data': {
-                        'type': 'message:update',
-                        'data': message.model_dump(),
-                    },
-                },
-                to=f'channel:{channel_id}',
-            )
-
-    async def __channel_emitter__(event_data):
-        event_type = event_data.get('type')
-
-        if event_type == 'chat:completion':
-            data = event_data.get('data', {})
-            output = data.get('output')
-            content = data.get('content') or get_output_text(output)
-            done = data.get('done', False)
-
-            if not content and not output and not done:
-                return
-
-            now = time.time()
-            if done or (now - state['last_emit_at']) >= THROTTLE_INTERVAL:
-                state['last_emit_at'] = now
-                await _emit_channel_update(content, done, output if isinstance(output, list) else None)
-
-        elif event_type == 'response:completion':
-            from open_webui.utils.middleware import handle_responses_streaming_event
-
-            data = event_data.get('data', {})
-            state['output'], _ = handle_responses_streaming_event(data, state['output'])
-            content = get_output_text(state['output'])
-
-            now = time.time()
-            if content and (now - state['last_emit_at']) >= THROTTLE_INTERVAL:
-                state['last_emit_at'] = now
-                await _emit_channel_update(content, False, state['output'])
-
-        elif event_type in ('files', 'chat:message:files'):
-            from open_webui.models.messages import Messages
-
-            files = event_data.get('data', {}).get('files', [])
-            if not files:
-                return
-
-            msg = await Messages.get_message_by_id(message_id)
-            if not msg or msg.channel_id != channel_id:
-                return
-
-            existing_files = (msg.data or {}).get('files')
-            for file in files:
-                if isinstance(file, dict) and file.get('id'):
-                    file['url'] = file['id']
-                    await Channels.add_file_to_channel_by_id(channel_id, file['id'], msg.user_id)
-                    await Channels.set_file_message_id_in_channel_by_id(channel_id, file['id'], message_id)
-
-            if isinstance(existing_files, list):
-                files.extend(existing_files)
-
-            await _emit_channel_update(msg.content, data={'files': files})
-
-        elif event_type == 'chat:message:error':
-            error = event_data.get('data', {}).get('error', {})
-            error_content = error.get('content', 'An error occurred') if isinstance(error, dict) else str(error)
-            await _emit_channel_update(f'Error: {error_content}', done=True)
-
-    return __channel_emitter__
-
-
 async def get_event_emitter(request_info, update_db=True):
-    # Channel mode: route pipeline output to channel message updates
-    if (request_info.get('chat_id') or '').startswith('channel:'):
-        return await _make_channel_emitter(request_info)
-
     async def __event_emitter__(event_data):
         user_id = request_info['user_id']
         chat_id = request_info['chat_id']

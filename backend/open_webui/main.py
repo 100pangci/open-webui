@@ -92,8 +92,6 @@ from open_webui.env import (
     ENABLE_PLUGINS,
     ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
     ENABLE_PYODIDE_FILE_PERSISTENCE,
-    # SCIM
-    ENABLE_SCIM,
     ENABLE_SIGNUP_PASSWORD_CONFIRMATION,
     ENABLE_STAR_SESSIONS_MIDDLEWARE,
     ENABLE_VERSION_UPDATE_CHECK,
@@ -109,7 +107,6 @@ from open_webui.env import (
     REDIS_URL,
     RESET_CONFIG_ON_START,
     SAFE_MODE,
-    SCIM_TOKEN,
     VERSION,
     WEBSOCKET_HEARTBEAT_INTERVAL,
     # Admin Account Runtime Creation
@@ -134,44 +131,25 @@ from open_webui.events import (
     get_event_catalog as get_event_catalog_items,
 )
 from open_webui.internal.db import engine, get_async_session
-from open_webui.models.access_grants import AccessGrants
-from open_webui.models.channels import Channels
 from open_webui.models.chats import ChatForm, Chats
 from open_webui.models.config import Config
 from open_webui.models.functions import Functions
-from open_webui.models.messages import Messages
 from open_webui.models.models import Models, normalize_model_tags
 from open_webui.models.users import Users
 from open_webui.routers import (
-    analytics,
-    audio,
     auths,
-    automations,
-    calendar,
-    channels,
     chats,
     configs,
-    evaluations,
     files,
     folders,
-    functions,
     groups,
     images,
-    knowledge,
-    memories,
     models,
-    notes,
-    notifications,
     ollama,
     openai,
     pipelines,
-    prompts,
     retrieval,
-    scim,
-    skills,
     tasks,
-    terminals,
-    tools,
     users,
     utils,
 )
@@ -389,10 +367,6 @@ async def lifespan(app: FastAPI):
     app.state.periodic_usage_pool_cleanup = asyncio.create_task(periodic_usage_pool_cleanup())
     app.state.periodic_session_pool_cleanup = asyncio.create_task(periodic_session_pool_cleanup())
 
-    from open_webui.utils.automations import scheduler_worker_loop
-
-    app.state.scheduler_worker_loop = asyncio.create_task(scheduler_worker_loop(app))
-
     if await Config.get('models.base_models_cache'):
         try:
             await get_all_models(
@@ -474,7 +448,6 @@ async def lifespan(app: FastAPI):
 
     app.state.periodic_usage_pool_cleanup.cancel()
     app.state.periodic_session_pool_cleanup.cancel()
-    app.state.scheduler_worker_loop.cancel()
 
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
 
@@ -570,15 +543,6 @@ app.state.TERMINAL_SERVERS = []
 #
 ########################################
 
-
-########################################
-#
-# SCIM
-#
-########################################
-
-app.state.ENABLE_SCIM = ENABLE_SCIM
-app.state.SCIM_TOKEN = SCIM_TOKEN
 
 ########################################
 #
@@ -745,18 +709,6 @@ async def initialize_runtime_config(app: FastAPI):
 
 ########################################
 #
-# AUDIO
-#
-########################################
-
-
-app.state.faster_whisper_model = None
-app.state.speech_synthesiser = None
-app.state.speech_speaker_embeddings_dataset = None
-
-
-########################################
-#
 # TASKS
 #
 ########################################
@@ -825,7 +777,6 @@ app.include_router(pipelines.router, prefix='/api/v1/pipelines', tags=['pipeline
 app.include_router(tasks.router, prefix='/api/v1/tasks', tags=['tasks'])
 app.include_router(images.router, prefix='/api/v1/images', tags=['images'])
 
-app.include_router(audio.router, prefix='/api/v1/audio', tags=['audio'])
 app.include_router(retrieval.router, prefix='/api/v1/retrieval', tags=['retrieval'])
 
 app.include_router(configs.router, prefix='/api/v1/configs', tags=['configs'])
@@ -834,34 +785,15 @@ app.include_router(auths.router, prefix='/api/v1/auths', tags=['auths'])
 app.include_router(users.router, prefix='/api/v1/users', tags=['users'])
 
 
-app.include_router(channels.router, prefix='/api/v1/channels', tags=['channels'])
 app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
-app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 
 
 app.include_router(models.router, prefix='/api/v1/models', tags=['models'])
-app.include_router(notifications.router, prefix='/api/v1/notifications', tags=['notifications'])
-app.include_router(knowledge.router, prefix='/api/v1/knowledge', tags=['knowledge'])
-app.include_router(prompts.router, prefix='/api/v1/prompts', tags=['prompts'])
-app.include_router(tools.router, prefix='/api/v1/tools', tags=['tools'])
-app.include_router(skills.router, prefix='/api/v1/skills', tags=['skills'])
 
-app.include_router(memories.router, prefix='/api/v1/memories', tags=['memories'])
 app.include_router(folders.router, prefix='/api/v1/folders', tags=['folders'])
 app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
-app.include_router(functions.router, prefix='/api/v1/functions', tags=['functions'])
-app.include_router(evaluations.router, prefix='/api/v1/evaluations', tags=['evaluations'])
-if ENABLE_ADMIN_ANALYTICS:
-    app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
-app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
-app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
-app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
-
-# SCIM 2.0 API for identity management
-if ENABLE_SCIM:
-    app.include_router(scim.router, prefix='/api/v1/scim/v2', tags=['scim'])
 
 
 ##################################
@@ -1228,17 +1160,11 @@ async def chat_completion(
         ):
             tool_servers = None
 
-        automation_id = form_data.pop('automation_id', None)
         tool_approval_mode = (
-            'full'
-            if automation_id or chat_id.startswith('channel:')
-            else (
-                form_data.get('params', {}).get('tool_approval_mode')
-                if await Config.get('chat.tool_permissions.enable', False)
-                else 'full'
-            )
-            or 'full'
-        )
+            form_data.get('params', {}).get('tool_approval_mode')
+            if await Config.get('chat.tool_permissions.enable', False)
+            else 'full'
+        ) or 'full'
 
         metadata = {
             'user_id': user.id,
@@ -1249,7 +1175,6 @@ async def chat_completion(
             'user_message_id': user_message.get('id') if user_message else None,
             'assistant_message_id': form_data.pop('assistant_message_id', None),
             'session_id': form_data.pop('session_id', None),
-            'automation_id': automation_id,
             'folder_id': form_data.pop('folder_id', None),
             'filter_ids': form_data.pop('filter_ids', []),
             'tool_ids': form_data.get('tool_ids', None),
@@ -1282,49 +1207,6 @@ async def chat_completion(
 
         if metadata.get('chat_id') and user:
             chat_id = metadata['chat_id']
-
-            # Gate channel: branch — caller needs write access on the channel, and the
-            # supplied message_id must belong to that channel and be the caller's own.
-            if chat_id.startswith('channel:'):
-                channel_id = chat_id.removeprefix('channel:')
-                channel = await Channels.get_channel_by_id(channel_id)
-                if not channel:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=ERROR_MESSAGES.NOT_FOUND,
-                    )
-                if user.role != 'admin':
-                    if channel.type in ['group', 'dm']:
-                        if not await Channels.is_user_channel_member(channel.id, user.id):
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=ERROR_MESSAGES.DEFAULT(),
-                            )
-                    else:
-                        if not await AccessGrants.has_access(
-                            user_id=user.id,
-                            resource_type='channel',
-                            resource_id=channel.id,
-                            permission='write',
-                        ):
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=ERROR_MESSAGES.DEFAULT(),
-                            )
-                for entry in message_ids:
-                    target_message_id = entry.get('message_id')
-                    if not target_message_id:
-                        continue
-                    target_message = await Messages.get_message_by_id(target_message_id)
-                    if target_message and (
-                        target_message.channel_id != channel.id
-                        # Write access is not authorship — block cross-member edits.
-                        or (user.role != 'admin' and target_message.user_id != user.id)
-                    ):
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail=ERROR_MESSAGES.DEFAULT(),
-                        )
 
             if is_saved_chat_id(chat_id):
                 if is_new_chat:
@@ -1513,16 +1395,6 @@ async def chat_completion(
                                 'content_preview': user_message.get('content', '')[:300],
                             },
                         )
-                        if not getattr(request.state, 'internal', False) and not (user_message.get('meta') or {}).get(
-                            'internal'
-                        ):
-                            try:
-                                from open_webui.utils.timers import cancel_timers_for_chat
-
-                                await cancel_timers_for_chat(chat_id, 'chat.user_message', user.id)
-                            except Exception:
-                                log.exception('Failed to cancel chat.user_message timers for chat %s', chat_id)
-
                         # Link grandparent → user message (childrenIds)
                         grandparent_id = user_message.get('parentId')
                         if grandparent_id:
@@ -1883,7 +1755,7 @@ async def resolve_chat_message_tool_call(
     }
 
 
-# Expose as app.state so internal callers (e.g. automations) can
+# Expose as app.state so internal callers can
 # use the full pipeline without importing from main.py (avoids circular deps).
 app.state.CHAT_COMPLETION_HANDLER = chat_completion
 
@@ -2045,13 +1917,6 @@ async def verify_chat_ownership(chat_id: str | None, user) -> None:
     """Temporary chats are per-socket and unsaved, so they have no owner to check."""
     if not chat_id or is_temporary_chat_id(chat_id):
         return
-
-    # Channel messages need the membership and write-access gate that only /api/chat/completions has.
-    if chat_id.startswith('channel:'):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Channel chats are not supported on this endpoint',
-        )
 
     if user.role != 'admin' and not await Chats.is_chat_owner(chat_id, user.id):
         raise HTTPException(
@@ -2237,10 +2102,6 @@ async def get_app_config(request: Request):
         'direct.enable',
         'folders.enable',
         'folders.max_file_count',
-        'channels.enable',
-        'calendar.enable',
-        'automations.enable',
-        'notes.enable',
         'chat.context_compaction.enable',
         'chat.tool_permissions.enable',
         'web.search.enable',
@@ -2320,10 +2181,6 @@ async def get_app_config(request: Request):
                     'enable_plugins': ENABLE_PLUGINS,
                     'enable_folders': config.get('folders.enable'),
                     'folder_max_file_count': config.get('folders.max_file_count'),
-                    'enable_channels': config.get('channels.enable'),
-                    'enable_calendar': config.get('calendar.enable'),
-                    'enable_automations': config.get('automations.enable'),
-                    'enable_notes': config.get('notes.enable'),
                     'enable_context_compaction': config.get('chat.context_compaction.enable'),
                     'enable_tool_permissions': config.get('chat.tool_permissions.enable'),
                     'enable_web_search': config.get('web.search.enable'),

@@ -47,7 +47,6 @@ from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.models.folders import Folders
 from open_webui.models.models import Models
-from open_webui.models.notes import Notes
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.users import UserModel, Users
 from open_webui.retrieval.utils import get_sources_from_items
@@ -100,7 +99,6 @@ from open_webui.utils.filter import (
 )
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.mcp.client import MCPClient
-from open_webui.utils.memory import add_memory_context, review_memory_after_turn
 from open_webui.utils.misc import (
     add_or_update_system_message,
     add_or_update_user_message,
@@ -133,7 +131,6 @@ from open_webui.utils.task import (
 )
 from open_webui.utils.tools import (
     build_tool_server_headers,
-    get_attached_knowledge,
     get_builtin_tools,
     get_terminal_tools,
     get_tools,
@@ -2268,47 +2265,6 @@ def sanitize_tool_pairs(messages: list[dict]) -> list[dict]:
 
 
 # Ids are validated as [a-z0-9_-]+ on create; matching that keeps ordinary "<$..." text intact.
-SKILL_MENTION_RE = re.compile(r'<(?:\$([a-z0-9_-]+)(?:\|[^>]*)?|/([a-z0-9_-]+)\|[^>]*)>')
-
-
-def _get_text_parts(message: dict) -> list[str]:
-    """Return all text segments from a message's content."""
-    content = message.get('content')
-    if isinstance(content, str):
-        return [content]
-    if isinstance(content, list):
-        return [p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text']
-    return []
-
-
-def extract_skill_ids_from_messages(messages: list[dict]) -> set[str]:
-    """Extract skill IDs from <$skillId|label> and </skillId|label> mention tags."""
-    ids: set[str] = set()
-    for message in messages:
-        for text in _get_text_parts(message):
-            ids.update(m.group(1) or m.group(2) for m in SKILL_MENTION_RE.finditer(text))
-    return ids
-
-
-SKILL_MENTION_STRIP_RE = re.compile(r'<(?:\$[a-z0-9_-]+(?:\|([^>]*))?|/[a-z0-9_-]+\|([^>]*))>')
-
-
-def strip_skill_mentions(messages: list[dict]) -> None:
-    """Replace <$skillId|label> and </skillId|label> mention tags with the label in-place."""
-
-    def label(match):
-        return match.group(1) or match.group(2) or ''
-
-    for message in messages:
-        content = message.get('content')
-        if isinstance(content, str) and SKILL_MENTION_STRIP_RE.search(content):
-            message['content'] = SKILL_MENTION_STRIP_RE.sub(label, content).strip()
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get('type') == 'text':
-                    text = part.get('text', '')
-                    if SKILL_MENTION_STRIP_RE.search(text):
-                        part['text'] = SKILL_MENTION_STRIP_RE.sub(label, text).strip()
 
 
 async def connect_mcp_server(
@@ -2561,61 +2517,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if folder and user.role != 'admin' and not await has_folder_access(user.id, folder, 'read', db=None):
             folder = None
 
-        if folder and folder.data:
-            if 'system_prompt' in folder.data:
-                form_data = await apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
-            if 'files' in folder.data:
-                if metadata.get('params', {}).get('function_calling') == 'legacy':
-                    form_data['files'] = [
-                        {'type': 'folder', 'id': folder.id},
-                        *form_data.get('files', []),
-                    ]
-                else:
-                    # Native FC: skip RAG injection, builtin tools
-                    # will read folder knowledge from metadata.
-                    metadata['folder_knowledge'] = await get_owner_accessible_folder_files(folder)
-
-    # Model "Knowledge" handling
-    user_message = get_last_user_message(form_data['messages'])
-    model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
-
-    if model_knowledge and metadata.get('params', {}).get('function_calling') == 'legacy':
-        await event_emitter(
-            {
-                'type': 'status',
-                'data': {
-                    'action': 'knowledge_search',
-                    'query': user_message,
-                    'done': False,
-                },
-            }
-        )
-
-        knowledge_files = []
-        for item in model_knowledge:
-            if item.get('collection_name'):
-                knowledge_files.append(
-                    {
-                        'id': item.get('collection_name'),
-                        'name': item.get('name'),
-                        'legacy': True,
-                    }
-                )
-            elif item.get('collection_names'):
-                knowledge_files.append(
-                    {
-                        'name': item.get('name'),
-                        'type': 'collection',
-                        'collection_names': item.get('collection_names'),
-                        'legacy': True,
-                    }
-                )
-            else:
-                knowledge_files.append(item)
-
-        files = form_data.get('files', [])
-        files.extend(knowledge_files)
-        form_data['files'] = files
+        if folder and folder.data and 'system_prompt' in folder.data:
+            form_data = await apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
 
     variables = form_data.pop('variables', None)
     payload_tools = form_data.get('tools', None)  # snapshot before filters
@@ -2646,26 +2549,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features
     if features:
-        if 'voice' in features and features['voice']:
-            if await Config.get('task.voice.prompt.enable'):
-                template = await Config.get('task.voice.prompt_template')
-                if not template:
-                    template = DEFAULT_VOICE_MODE_PROMPT_TEMPLATE
-
-                form_data['messages'] = add_or_update_system_message(
-                    template,
-                    form_data['messages'],
-                )
-
-        if 'memory' in features and features['memory'] and await Config.get('memories.system_context.enable'):
-            # features is client-supplied; re-check the permission the native FC path enforces.
-            if getattr(user, 'role', None) == 'admin' or await has_permission(
-                getattr(user, 'id', ''),
-                'features.memories',
-                await Config.get('user.permissions'),
-            ):
-                form_data = await add_memory_context(request, form_data, user, model)
-
         if 'web_search' in features and features['web_search'] and await Config.get('web.search.enable'):
             # features is client-supplied; re-check the permission the native FC path enforces.
             if getattr(user, 'role', None) == 'admin' or await has_permission(
@@ -2728,95 +2611,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Otherwise, save any tools that filter inlets added for merging later.
     inlet_filter_tools = None if payload_tools is not None else form_data.get('tools', None)
 
-    # Mentioned skills get full content; selected/default skills can be loaded through view_skill.
-    mentioned_skill_ids = extract_skill_ids_from_messages(form_data.get('messages', []))
-    skill_ids = sorted(
-        set(form_data.pop('skill_ids', None) or [])
-        | set(model.get('info', {}).get('meta', {}).get('skillIds', []))
-        | mentioned_skill_ids
-    )
-    available_skills = []
-    view_skill_ids = []
-    chat = None
-    if is_saved_chat_id(metadata.get('chat_id')):
-        chat = await Chats.get_chat_by_id(metadata['chat_id'])
-
-    is_note_chat = bool(chat and (chat.meta or {}).get('internal') is True and (chat.meta or {}).get('type') == 'note')
-
-    if is_note_chat:
-        note_id = (chat.meta or {}).get('note_id')
-        note = await Notes.get_note_by_id(note_id) if note_id else None
-        if note and (
-            user.role == 'admin'
-            or note.user_id == user.id
-            or await AccessGrants.has_access(
-                user_id=user.id,
-                resource_type='note',
-                resource_id=note.id,
-                permission='read',
-            )
-        ):
-            note_files = [
-                file
-                for file in ((note.data or {}).get('files') or [])
-                if isinstance(file, dict)
-                and file.get('type') != 'image'
-                and not (file.get('content_type') or '').startswith('image/')
-            ]
-            if note_files:
-                files = [*(files or []), *note_files]
-
-    use_builtin_tools = is_note_chat or (
+    use_builtin_tools = (
         bool(metadata.get('session_id'))
         and metadata.get('params', {}).get('function_calling') != 'legacy'
         and (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('builtin_tools', True)
     )
 
-    if skill_ids:
-        from open_webui.models.skills import Skills as SkillsModel
-
-        accessible_skills = {s.id: s for s in await SkillsModel.get_skills(user_id=user.id, ids=skill_ids)}
-        for sid in skill_ids:
-            s = accessible_skills.get(sid)
-            if s and s.is_active:
-                available_skills.append(s)
-
-        skill_manifest = ''
-        for skill in available_skills:
-            if skill.id in mentioned_skill_ids or not use_builtin_tools:
-                form_data['messages'] = add_or_update_system_message(
-                    f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
-                    form_data['messages'],
-                    append=True,
-                )
-            else:
-                view_skill_ids.append(skill.id)
-                skill_manifest += (
-                    f'<skill>\n<id>{skill.id}</id>\n<name>{skill.name}</name>\n'
-                    f'<description>{skill.description or ""}</description>\n</skill>\n'
-                )
-
-        if skill_manifest:
-            form_data['messages'] = add_or_update_system_message(
-                f'<available_skills>\n{skill_manifest}</available_skills>',
-                form_data['messages'],
-                append=True,
-            )
-
-    # Strip <$skillId|label> mention tags so the model doesn't see raw markup.
-    strip_skill_mentions(form_data.get('messages', []))
-
     prompt = get_last_user_message(form_data['messages'])
 
-    # Guard against empty user message after skill mention stripping.
-    # When a user selects a skill ($skill-name) without typing additional text,
-    # the stripped result is an empty string which causes 400 errors on providers
-    # that reject empty content blocks (e.g. AWS Bedrock ConverseStream).
-    if not prompt or not prompt.strip():
-        fallback = ', '.join(s.name for s in available_skills)
-        if fallback:
-            set_last_user_message_content(fallback, form_data['messages'])
-            prompt = fallback
     # TODO: re-enable URL extraction from prompt
     # urls = []
     # if prompt and len(prompt or "") < 500 and (not files or len(files) == 0):
@@ -2831,7 +2633,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         {
             'model_id': form_data.get('model'),
             'tool_ids': tool_ids,
-            'skill_ids': skill_ids,
+            'skill_ids': form_data.pop('skill_ids', None),
             'terminal_id': terminal_id,
             'files': files,
             'features': features,
@@ -2986,37 +2788,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             chat_id = metadata.get('chat_id')
             form_data['messages'] = await add_file_context(form_data.get('messages', []), chat_id, user)
 
-            if (model.get('info', {}).get('meta', {}).get('builtinTools') or {}).get('knowledge', True):
-                from html import escape
-
-                knowledge_tags = []
-                for item in get_attached_knowledge(model, metadata):
-                    if not item.get('id') or not item.get('type'):
-                        continue
-                    attrs = f'type="{escape(str(item["type"]), quote=True)}" id="{escape(str(item["id"]), quote=True)}"'
-                    if item.get('name'):
-                        attrs += f' name="{escape(str(item["name"]), quote=True)}"'
-                    if item.get('source'):
-                        attrs += f' source="{escape(str(item["source"]), quote=True)}"'
-                    knowledge_tags.append(f'<knowledge {attrs}/>')
-
-                if knowledge_tags:
-                    form_data['messages'] = add_or_update_system_message(
-                        '<attached_knowledge>\n' + '\n'.join(knowledge_tags) + '\n</attached_knowledge>',
-                        form_data['messages'],
-                        append=True,
-                    )
-
             builtin_tools = await get_builtin_tools(
                 request,
                 {
                     **extra_params,
                     '__event_emitter__': event_emitter,
-                    '__skill_ids__': view_skill_ids,
                 },
                 features,
                 model,
-                is_note_chat=is_note_chat,
             )
             for name, tool_dict in builtin_tools.items():
                 if name not in tools_dict:
@@ -3085,19 +2864,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if len(sources) > 0:
         events.append({'sources': sources})
-
-    if model_knowledge:
-        await event_emitter(
-            {
-                'type': 'status',
-                'data': {
-                    'action': 'knowledge_search',
-                    'query': user_message,
-                    'done': True,
-                    'hidden': True,
-                },
-            }
-        )
 
     if ENABLE_PLUGINS:
         try:
@@ -3856,17 +3622,6 @@ async def background_tasks_handler(ctx):
                             )
                         except Exception as e:
                             pass
-
-        if messages:
-            await review_memory_after_turn(
-                request=request,
-                user=user,
-                model=ctx['model'],
-                metadata=metadata,
-                form_data=form_data,
-                assistant_message=ctx.get('assistant_message') or {},
-                messages=messages,
-            )
 
 
 async def outlet_filter_handler(ctx):

@@ -451,7 +451,6 @@ class UsersTable:
         """Paginated user listing with optional filters and sort."""
         async with get_async_db_context(db) as session:
             # Deferred imports to avoid circular dependencies
-            from open_webui.models.channels import ChannelMember
             from open_webui.models.groups import GroupMember
 
             # Join GroupMember so we can order by group_id when requested
@@ -464,17 +463,6 @@ class UsersTable:
                         or_(
                             User.name.ilike(f'%{query_key}%'),
                             User.email.ilike(f'%{query_key}%'),
-                        )
-                    )
-
-                channel_id = filter.get('channel_id')
-                if channel_id:
-                    stmt = stmt.filter(
-                        exists(
-                            select(ChannelMember.id).where(
-                                ChannelMember.user_id == User.id,
-                                ChannelMember.channel_id == channel_id,
-                            )
                         )
                     )
 

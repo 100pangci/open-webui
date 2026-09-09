@@ -62,7 +62,6 @@ from open_webui.env import (
 from open_webui.events import EVENTS, publish_event
 from open_webui.internal.db import get_async_db, get_async_session
 from open_webui.models.files import FileModel, Files, FileUpdateForm
-from open_webui.models.knowledge import Knowledges
 from open_webui.models.config import Config
 
 # Document loaders
@@ -3192,7 +3191,6 @@ async def reset_vector_db(
     db: AsyncSession = Depends(get_async_session),
 ):
     await ASYNC_VECTOR_DB_CLIENT.reset()
-    await Knowledges.delete_all_knowledge(db=db)
     await publish_event(
         request,
         EVENTS.RETRIEVAL_VECTOR_DB_RESET,

@@ -33,7 +33,6 @@ from open_webui.models.users import (
     UserUpdateForm,
 )
 from open_webui.models.access_grants import AccessGrants
-from open_webui.models.knowledge import Knowledges
 from open_webui.models.models import Models
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import get_permissions, has_permission
@@ -1133,18 +1132,6 @@ async def get_user_preview(
     )
     accessible_model_ids = owned_model_ids | granted_model_ids
 
-    all_knowledge = await Knowledges.get_knowledge_bases(db=db)
-    owned_knowledge_ids = {k.id for k in all_knowledge if k.user_id == user_id}
-    granted_knowledge_ids = await AccessGrants.get_accessible_resource_ids(
-        user_id=user_id,
-        resource_type='knowledge',
-        resource_ids=[k.id for k in all_knowledge if k.user_id != user_id],
-        permission='read',
-        user_group_ids=user_group_ids,
-        db=db,
-    )
-    accessible_knowledge_ids = owned_knowledge_ids | granted_knowledge_ids
-
     all_tools = await Tools.get_tools(defer_content=True, db=db)
     owned_tool_ids = {t.id for t in all_tools if t.user_id == user_id}
     granted_tool_ids = await AccessGrants.get_accessible_resource_ids(
@@ -1163,10 +1150,6 @@ async def get_user_preview(
         'models': {
             'items': [{'id': m.id, 'name': m.name} for m in active_models if m.id in accessible_model_ids],
             'total': len(active_models),
-        },
-        'knowledge': {
-            'items': [{'id': k.id, 'name': k.name} for k in all_knowledge if k.id in accessible_knowledge_ids],
-            'total': len(all_knowledge),
         },
         'tools': {
             'items': [{'id': t.id, 'name': t.name} for t in all_tools if t.id in accessible_tool_ids],

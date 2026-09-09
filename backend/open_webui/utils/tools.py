@@ -45,60 +45,24 @@ from open_webui.models.groups import Groups
 from open_webui.models.tools import Tools
 from open_webui.models.users import UserModel
 from open_webui.tools.builtin import (
-    add_memory,
     ask_user,
     calculate_timestamp,
-    create_automation,
-    create_calendar_event,
     create_tasks,
     delegate_task,
-    delete_automation,
-    delete_calendar_event,
-    delete_memory,
     edit_image,
     execute_code,
     fetch_url,
     generate_image,
     get_current_timestamp,
     grep_chat_files,
-    grep_knowledge_files,
-    kb_exec,
-    list_automations,
     list_chat_files,
-    list_knowledge,
-    list_knowledge_bases,
-    list_memories,
-    list_memory_paths,
     notify,
     query_chat_files,
-    query_knowledge_bases,
-    query_knowledge_files,
-    read_memory_path,
-    replace_memory_content,
-    replace_note_content,
-    search_calendar_events,
-    search_channel_messages,
-    search_channels,
     search_chats,
-    search_knowledge_bases,
-    search_knowledge_files,
-    search_memories,
-    search_notes,
     search_web,
-    timer,
-    toggle_automation,
-    update_automation,
-    update_calendar_event,
-    update_memory,
     update_task,
-    view_channel_message,
-    view_channel_thread,
     view_chat,
     view_file,
-    view_knowledge_file,
-    view_note,
-    view_skill,
-    write_note,
 )
 from open_webui.utils.access_control import has_access, has_connection_access, has_permission
 from open_webui.utils.chat_id import is_saved_chat_id
@@ -480,47 +444,8 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
     return tools_dict
 
 
-def get_attached_knowledge(model: dict, metadata: dict) -> list[dict]:
-    model_meta = model.get('info', {}).get('meta', {})
-    knowledge = []
-    seen = set()
-
-    for source, items in (
-        ('model', model_meta.get('knowledge') or []),
-        ('folder', metadata.get('folder_knowledge') or []),
-    ):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            key = (item.get('type'), item.get('id'))
-            if not all(key) or key in seen:
-                continue
-            knowledge.append({**item, 'source': source})
-            seen.add(key)
-
-    file_context_enabled = (model_meta.get('capabilities') or {}).get('file_context', True)
-    if not file_context_enabled:
-        for item in metadata.get('files') or []:
-            if not isinstance(item, dict) or item.get('type') not in ('collection', 'note'):
-                continue
-            key = (item.get('type'), item.get('id'))
-            if not all(key) or key in seen:
-                continue
-            knowledge.append(
-                {
-                    'type': item.get('type'),
-                    'id': item.get('id'),
-                    'name': item.get('name'),
-                    'source': 'chat',
-                }
-            )
-            seen.add(key)
-
-    return knowledge
-
-
 async def get_builtin_tools(
-    request: Request, extra_params: dict, features: dict = None, model: dict = None, is_note_chat: bool = False
+    request: Request, extra_params: dict, features: dict = None, model: dict = None
 ) -> dict[str, dict]:
     """
     Get built-in tools for native function calling.
@@ -548,10 +473,6 @@ async def get_builtin_tools(
         'image_generation.enable',
         'images.edit.enable',
         'code_interpreter.enable',
-        'notes.enable',
-        'channels.enable',
-        'automations.enable',
-        'calendar.enable',
         'ui.enable_user_webhooks',
         'subagents.enable',
         'subagents.background_enabled',
@@ -601,47 +522,6 @@ async def get_builtin_tools(
     ):
         builtin_functions.extend([list_chat_files, query_chat_files, grep_chat_files, view_file])
 
-    # Knowledge base tools - conditional injection based on model knowledge
-    # If model has attached knowledge (any type), only provide query_knowledge_files
-    # Otherwise, provide all KB browsing tools
-    model_knowledge = get_attached_knowledge(model, metadata)
-    if is_builtin_tool_enabled('knowledge'):
-        from open_webui.env import ENABLE_KB_EXEC
-
-        if ENABLE_KB_EXEC:
-            builtin_functions.append(kb_exec)
-            builtin_functions.append(query_knowledge_files)
-            # Notes attached to the model need view_note since kb_exec is file-only
-            if model_knowledge:
-                knowledge_types = {item.get('type') for item in model_knowledge}
-                if 'note' in knowledge_types:
-                    builtin_functions.append(view_note)
-            if not model_knowledge:
-                builtin_functions.append(query_knowledge_bases)
-                builtin_functions.append(search_knowledge_bases)
-        elif model_knowledge:
-            builtin_functions.extend(
-                [list_knowledge, search_knowledge_files, grep_knowledge_files, query_knowledge_files]
-            )
-
-            knowledge_types = {item.get('type') for item in model_knowledge}
-            if 'file' in knowledge_types or 'collection' in knowledge_types:
-                builtin_functions.extend([view_file, view_knowledge_file])
-            if 'note' in knowledge_types:
-                builtin_functions.append(view_note)
-        else:
-            builtin_functions.extend(
-                [
-                    list_knowledge_bases,
-                    search_knowledge_bases,
-                    query_knowledge_bases,
-                    grep_knowledge_files,
-                    search_knowledge_files,
-                    query_knowledge_files,
-                    view_knowledge_file,
-                ]
-            )
-
     # Chats tools - search and fetch user's chat history
     if is_builtin_tool_enabled('chats'):
         builtin_functions.extend([search_chats, view_chat])
@@ -652,27 +532,7 @@ async def get_builtin_tools(
         and getattr(request.state, 'internal', False) is not True
         and getattr(request.state, 'direct', False) is not True
     ):
-        builtin_functions.extend([delegate_task, timer])
-
-    # Add memory tools when memory is enabled and the model allows this builtin category.
-    if (
-        is_builtin_tool_enabled('memory')
-        and features.get('memory')
-        and get_model_capability('memory')
-        and await has_user_permission('memories')
-    ):
-        builtin_functions.extend(
-            [
-                search_memories,
-                list_memory_paths,
-                read_memory_path,
-                list_memories,
-                update_memory,
-                add_memory,
-                replace_memory_content,
-                delete_memory,
-            ]
-        )
+        builtin_functions.extend([delegate_task])
 
     # Add web search tools if builtin category enabled AND enabled globally AND model has web_search capability
     if (
@@ -714,47 +574,10 @@ async def get_builtin_tools(
     ):
         builtin_functions.append(execute_code)
 
-    # Notes tools - search, view, create, and update user's notes
-    if is_note_chat or (
-        is_builtin_tool_enabled('notes') and config.get('notes.enable') and await has_user_permission('notes')
-    ):
-        builtin_functions.extend([search_notes, view_note, write_note, replace_note_content])
-
-    # Channels tools - search channels and messages
-    if is_builtin_tool_enabled('channels') and config.get('channels.enable') and await has_user_permission('channels'):
-        builtin_functions.extend(
-            [
-                search_channels,
-                search_channel_messages,
-                view_channel_thread,
-                view_channel_message,
-            ]
-        )
-
-    # Skills tools - view_skill allows model to load full skill instructions on demand
-    if extra_params.get('__skill_ids__'):
-        builtin_functions.append(view_skill)
-
     # Task management - break down complex work into trackable steps
-    # Task state is stored on the chats row; local/channel IDs do not have one.
+    # Task state is stored on the chats row.
     if is_builtin_tool_enabled('tasks') and is_saved_chat_id(metadata.get('chat_id')):
         builtin_functions.extend([create_tasks, update_task])
-
-    # Automation tools - create and manage scheduled automations from chat
-    if (
-        is_builtin_tool_enabled('automations')
-        and config.get('automations.enable')
-        and await has_user_permission('automations')
-    ):
-        builtin_functions.extend(
-            [create_automation, update_automation, list_automations, toggle_automation, delete_automation]
-        )
-
-    # Calendar tools - search/create/update/delete events
-    if is_builtin_tool_enabled('calendar') and config.get('calendar.enable') and await has_user_permission('calendar'):
-        builtin_functions.extend(
-            [search_calendar_events, create_calendar_event, update_calendar_event, delete_calendar_event]
-        )
 
     if (
         is_builtin_tool_enabled('notifications')
@@ -780,7 +603,6 @@ async def get_builtin_tools(
                 '__files__': chat_files,
                 '__chat_id__': extra_params.get('__chat_id__'),
                 '__message_id__': extra_params.get('__message_id__'),
-                '__model_knowledge__': model_knowledge,
             },
             get_builtin_function_introspection(func),
         )
